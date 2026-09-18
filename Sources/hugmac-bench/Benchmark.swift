@@ -73,6 +73,8 @@ func gb(_ bytes: Int64) -> String {
 @main
 struct Benchmark {
     static func main() async {
+        // A one-hour run piped to a file would otherwise report nothing until it flushed.
+        setvbuf(stdout, nil, _IONBF, 0)
         do { try await run() } catch {
             FileHandle.standardError.write(Data("error: \(error)\n".utf8))
             exit(1)
