@@ -43,9 +43,7 @@ public actor SeedVR2Residency {
     /// The sequence that actually frees memory: clamp the cache to nothing, clear it, then
     /// restore the working limit.
     nonisolated static func releaseBuffers(restoringLimitTo limit: Int) {
-        Memory.cacheLimit = 0
-        Memory.clearCache()
-        Memory.cacheLimit = limit
+        MemoryRelease.returnCachedBuffers(restoringLimitTo: limit)
     }
 
     /// Peak resident bytes MLX has seen, for `CalibrationSample`.

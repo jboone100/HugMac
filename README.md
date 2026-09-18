@@ -5,19 +5,21 @@ Browse, grade, install and run MLX models on Apple Silicon. The design plan live
 ## Current state
 
 Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), **the model
-installer**, ported from MLXUI's `InstallManager`, the **job queue**, and the **machine
-profile** with its first-run speed tests (plan §5.13–5.14).
+installer**, ported from MLXUI's `InstallManager`, the **job queue**, the **machine
+profile** with its first-run speed tests (plan §5.13–5.14), and **Chat** (plan §5.12).
 
 | Target | What's in it | Status |
 |---|---|---|
-| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 117 tests pass |
+| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 138 tests pass |
+| `HugMacCore/Chat` | chat model catalog, `ChatModelPicker` (Automatic), conversations, the markdown block parser | 21 tests |
 | `HugMacCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `HugMacCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `HugMacUI` | the **This Mac**, **Upscale** (single or batch) and **Jobs** screens and their models | 18 tests |
+| `HugMacUI` | the **Chat**, **This Mac**, **Upscale** (single or batch) and **Jobs** screens and their models | 25 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `HugMacMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
-| `hugmac-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile` | builds |
+| `HugMacMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
+| `hugmac-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile`, `--chat` | builds |
 
 ## Building
 
@@ -107,6 +109,28 @@ swift run hugmac-bench --probe     # run the speed tests and save them
 ```
 
 Results live in `probes.json` beside `calibration.json`, and stay on the Mac.
+
+## Chat
+
+Chat opens ready (plan §5.12). **Automatic** picks the best installed model that runs well on
+this Mac: green first (fits with headroom in memory free now, and fast enough to read), then
+the highest quality, then the fastest. Any installed model can be chosen instead; each is
+graded with its arithmetic — weights + context cache + runtime, and tokens a second.
+
+- **Never downloads behind your back.** A better model that would run here is named, with its
+  size and an Install button. With nothing installed, the screen is the recommendation.
+- **Memory comes back.** Eject, 5 minutes idle, or a job starting (a streaming reply finishes
+  first) unloads the model and returns MLX's cached buffers to the system.
+- **Replies render** as markdown, code, tables or JSON, with a per-message *Show as* override
+  remembered per model; a reasoning model's thinking is folded, and off unless *Think first*.
+- **Speed is measured** from each reply and feeds the next estimate. Conversations are saved in
+  `~/Library/Application Support/HugMac/conversations/` and never leave the Mac.
+
+v1 covers the Qwen3.5 family (0.8B to 122B-A10B, Apache-2.0).
+
+```bash
+swift run hugmac-bench --chat mlx-community/Qwen3.5-9B-4bit "Explain unified memory in two sentences."
+```
 
 ## Installing models
 

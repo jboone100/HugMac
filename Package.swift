@@ -14,6 +14,11 @@ let mlxProducts: [Product] = skipMLX ? [] : [
 let mlxDependencies: [Package.Dependency] = skipMLX ? [] : [
     // Pinned exactly: mlx-swift has shipped breaking API changes in patch releases.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
+    // Chat (plan §5.12). Owner-approved 2026-09-18, pinned exactly to MLXUI's versions:
+    // the LLM runtime, and the real tokenizers + Jinja chat templates. A hand-rolled
+    // tokenizer is not an option — MLXUI's produced garbage tokens (its journal 2026-37).
+    .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.31.3"),
+    .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.3.3"),
 ]
 let mlxTargets: [Target] = skipMLX ? [] : [
     // The benchmark runner: resolves a plan, runs the engine, reports per-phase peak and
@@ -32,6 +37,9 @@ let mlxTargets: [Target] = skipMLX ? [] : [
             .product(name: "MLXNN", package: "mlx-swift"),
             .product(name: "MLXRandom", package: "mlx-swift"),
             .product(name: "MLXFast", package: "mlx-swift"),
+            .product(name: "MLXLLM", package: "mlx-swift-lm"),
+            .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            .product(name: "Tokenizers", package: "swift-transformers"),
         ]
     ),
 ]

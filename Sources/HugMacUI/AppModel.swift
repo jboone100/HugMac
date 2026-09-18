@@ -12,11 +12,13 @@ public final class AppModel {
     public let queue: JobQueue
     public let upscale: UpscaleModel
     public let machine: MachineModel
+    public let chat: ChatModel
 
-    public init(queue: JobQueue, upscale: UpscaleModel, machine: MachineModel) {
+    public init(queue: JobQueue, upscale: UpscaleModel, machine: MachineModel, chat: ChatModel) {
         self.queue = queue
         self.upscale = upscale
         self.machine = machine
+        self.chat = chat
     }
 
     /// The production wiring: the default library, the real installer and engine, this
@@ -34,12 +36,14 @@ public final class AppModel {
             observeThermalState: true
         )
         queue.onFinished { job in Notifier.jobFinished(job) }
-        let upscale = UpscaleModel(store: store, installer: ModelInstaller(store: store), queue: queue)
+        let installer = ModelInstaller(store: store)
+        let upscale = UpscaleModel(store: store, installer: installer, queue: queue)
         let machine = MachineModel(store: store, queue: queue, calibrationURL: calibrationURL)
         // A finished job adds measurements and may have installed a model: both change
         // what the profile says.
         queue.onFinished { _ in machine.refresh() }
-        return AppModel(queue: queue, upscale: upscale, machine: machine)
+        let chat = ChatModel(store: store, installer: installer, queue: queue, backend: MLXChatEngine())
+        return AppModel(queue: queue, upscale: upscale, machine: machine, chat: chat)
     }
 }
 

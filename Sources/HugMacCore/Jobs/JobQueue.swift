@@ -46,6 +46,7 @@ public final class JobQueue {
     @ObservationIgnored private var thermalObserver: NSObjectProtocol?
     @ObservationIgnored private var pausedForHeat: UUID?
     @ObservationIgnored private var finishedHandlers: [(Job) -> Void] = []
+    @ObservationIgnored private var startGates: [@MainActor () async -> Void] = []
 
     public init(
         store: ModelStore,
@@ -114,6 +115,20 @@ public final class JobQueue {
     }
 
     /// Queued or running.
+    /// Run before each job loads anything — how Chat hands the machine over (plan §5.12):
+    /// an idle chat model is ejected, and a reply still streaming finishes first.
+    public func beforeEachJob(_ gate: @escaping @MainActor () async -> Void) {
+        startGates.append(gate)
+    }
+
+    /// Add measurements taken outside the queue — a chat reply's speed — through the one
+    /// owner of `calibration.json`, so two writers never overwrite each other.
+    public func recordMeasurements(_ samples: [CalibrationSample]) {
+        guard !samples.isEmpty else { return }
+        calibration.merge(samples)
+        if let calibrationURL { try? calibration.save(to: calibrationURL) }
+    }
+
     /// New first-run probe results (plan §5.14). Previews scale reference Macs' timings by
     /// them; a job's own plan reads them from disk when it starts.
     public func updateProbes(_ probes: ProbeStore) {
@@ -373,10 +388,13 @@ public final class JobQueue {
             Task { @MainActor [weak self] in self?.apply(update, to: id) }
         }
 
+        let gates = startGates
         runningTask = Task { [weak self] in
+            for gate in gates { await gate() }
             let started = Date()
             let result: Result<JobOutcome, Error>
             do {
+                try Task.checkCancellation()
                 try FileManager.default.createDirectory(at: context.workDirectory, withIntermediateDirectories: true)
                 // Detached: model evaluation blocks its thread, and it must not be the main
                 // one. Detached tasks don't inherit cancellation, so it's forwarded by hand.

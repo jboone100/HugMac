@@ -6,7 +6,7 @@ public struct RootView: View {
     private let initialFile: URL?
     @State private var selection: Section?
 
-    enum Section: Hashable { case machine, upscale, jobs }
+    enum Section: Hashable { case chat, machine, upscale, jobs }
 
     /// `initialFile` pre-loads the Upscale screen — used by debug runs, and later by
     /// "Open With".
@@ -21,6 +21,8 @@ public struct RootView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 SwiftUI.Section("Tasks") {
+                    Label("Chat", systemImage: "bubble.left.and.bubble.right")
+                        .tag(Section.chat)
                     Label("Upscale", systemImage: "arrow.up.left.and.arrow.down.right")
                         .tag(Section.upscale)
                 }
@@ -39,6 +41,7 @@ public struct RootView: View {
             switch selection {
             case .jobs: JobsView(queue: app.queue)
             case .machine: MachineView(model: app.machine)
+            case .chat: ChatView(model: app.chat)
             default: UpscaleView(model: app.upscale)
             }
         }

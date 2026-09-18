@@ -91,6 +91,10 @@ struct Benchmark {
             try await Compare.diff(arguments: Array(raw.dropFirst()))
             return
         }
+        if raw.first == "--chat" {
+            try await ChatCommand.run(arguments: Array(raw.dropFirst()))
+            return
+        }
         if raw.first == "--probe" {
             try await ProbeCommand.run(arguments: Array(raw.dropFirst()))
             return
