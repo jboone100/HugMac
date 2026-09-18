@@ -2,7 +2,8 @@ import AppKit
 import HugMacCore
 import SwiftUI
 
-/// Every job, newest first: what it's doing, and what can be done to it.
+/// The queue: what's running, what's next (drag to reorder), and what's done. Everything
+/// runs one at a time, whatever its kind.
 public struct JobsView: View {
     let queue: JobQueue
 
@@ -15,20 +16,73 @@ public struct JobsView: View {
             if queue.jobs.isEmpty {
                 ContentUnavailableView(
                     "No jobs yet", systemImage: "tray",
-                    description: Text("Upscales you start appear here, and keep running when their window closes.")
+                    description: Text("Upscales you queue appear here. They run one at a time, and keep running when their window closes.")
                 )
             } else {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     List {
-                        ForEach(queue.jobs.reversed()) { job in
-                            JobRow(job: job, queue: queue, now: context.date)
-                                .padding(.vertical, 6)
+                        if queue.isPaused {
+                            Label(queue.running == nil
+                                  ? "The queue is paused. Nothing new will start until you resume it."
+                                  : "The queue is paused — the current job finishes, then nothing new starts.",
+                                  systemImage: "pause.circle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        if let running = queue.running {
+                            Section("Running") {
+                                JobRow(job: running, queue: queue, now: context.date)
+                            }
+                        }
+                        let waiting = queue.waitingJobs
+                        if !waiting.isEmpty {
+                            Section("Up next — drag to reorder") {
+                                ForEach(waiting) { job in
+                                    JobRow(job: job, queue: queue, now: context.date)
+                                }
+                                .onMove { source, destination in
+                                    queue.moveWaiting(fromOffsets: source, toOffset: destination)
+                                }
+                            }
+                        }
+                        let finished = queue.jobs.filter(\.state.isFinished).reversed()
+                        if !finished.isEmpty {
+                            Section("Finished") {
+                                ForEach(Array(finished)) { job in
+                                    JobRow(job: job, queue: queue, now: context.date)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         .navigationTitle("Jobs")
+        .toolbar {
+            ToolbarItemGroup {
+                if queue.isPaused {
+                    Button {
+                        queue.resumeQueue()
+                    } label: {
+                        Label("Resume queue", systemImage: "play.fill")
+                    }
+                    .help("Start the next job")
+                } else {
+                    Button {
+                        queue.pauseQueue()
+                    } label: {
+                        Label("Pause queue", systemImage: "pause.fill")
+                    }
+                    .help("Let the current job finish, then start nothing new — get the Mac back without losing anything")
+                }
+                Button {
+                    queue.clearFinished()
+                } label: {
+                    Label("Clear finished", systemImage: "clear")
+                }
+                .help("Remove completed and cancelled jobs from the list (their files stay)")
+                .disabled(!queue.hasFinished)
+            }
+        }
     }
 }
 
@@ -42,6 +96,7 @@ struct JobRow: View {
             HStack(alignment: .firstTextBaseline) {
                 StateBadge(state: job.state)
                 Text(job.title).font(.headline).lineLimit(1)
+                Text(job.kind.displayName).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 actions
             }
@@ -54,6 +109,7 @@ struct JobRow: View {
                     .foregroundStyle(job.state == .failed ? Color.red : Color.secondary)
             }
         }
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder private var actions: some View {
@@ -85,7 +141,15 @@ struct JobRow: View {
         let elapsed = queue.elapsedSeconds(for: job.id, now: now)
         switch job.state {
         case .queued:
-            return "Queued · \(job.createdAt.formatted(date: .omitted, time: .shortened))"
+            if let blocker = queue.blocker(for: job.id) {
+                return blocker.state == .failed
+                    ? "Waiting for \(blocker.title), which failed — resume it to continue"
+                    : "Waiting for \(blocker.title)"
+            }
+            if !queue.canRun(job.kind) {
+                return "This version of HugMac can't run \(job.kind.displayName.lowercased()) jobs yet"
+            }
+            return queue.isPaused ? "Queued — the queue is paused" : "Queued"
         case .running:
             var parts = [UpscaleModel.phaseLabel(job.progress.phase)]
             if job.progress.unitsTotal > 1 {
@@ -127,7 +191,7 @@ struct StateBadge: View {
         switch state {
         case .queued: "Queued"
         case .running: "Running"
-        case .paused: "Paused"
+        case .paused: "Held"
         case .interrupted: "Interrupted"
         case .completed: "Done"
         case .failed: "Failed"

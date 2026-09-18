@@ -16,12 +16,14 @@ public struct SeedVR2JobExecutor: JobExecutor {
     }
 
     public func run(
-        _ job: Job, workDirectory: URL,
+        _ job: Job, context: JobContext,
         progress: @Sendable @escaping (StageProgress) -> Void
     ) async throws -> JobOutcome {
-        guard case .upscale(let spec) = job.kind else {
+        guard case .upscale(let requested) = job.kind else {
             throw StageError.unsupportedSetting("job kind")
         }
+        let workDirectory = context.workDirectory
+        let spec = try await Self.resolve(requested, context: context)
         let hardware = HardwareProfile.detect()
         let chipName = hardware.chipName
         let plan = try Self.plan(for: spec, in: workDirectory, hardware: hardware,
@@ -43,6 +45,10 @@ public struct SeedVR2JobExecutor: JobExecutor {
                 outputURL: spec.outputURL, seconds: result.measurements.totalSeconds,
                 peakBytes: result.measurements.peakBytes, samples: result.measurements.samples
             )
+
+        case .outputOf:
+            // `resolve` always replaces this with a concrete video or image.
+            throw StageError.engineFailure(stage: "SeedVR2", detail: "unresolved input")
 
         case .image(let url, _, _):
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -69,6 +75,27 @@ public struct SeedVR2JobExecutor: JobExecutor {
         }
     }
 
+    /// Turn "the output of job X" into the video or image it actually is — known only now,
+    /// when X has finished.
+    static func resolve(_ spec: UpscaleJobSpec, context: JobContext) async throws -> UpscaleJobSpec {
+        guard case .outputOf(let jobID) = spec.source else { return spec }
+        guard let url = context.dependencyOutputs[jobID] else {
+            throw StageError.missingInput(slot: "input", kind: .video)
+        }
+        let type = UTType(filenameExtension: url.pathExtension.lowercased())
+        let source: UpscaleJobSpec.Source
+        if type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true {
+            source = .video(try await VideoIO.probe(url))
+        } else if let image = CGImageSourceCreateWithURL(url as CFURL, nil)
+                    .flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) }) {
+            source = .image(url: url, width: image.width, height: image.height)
+        } else {
+            throw StageError.engineFailure(stage: "SeedVR2", detail: "can't read \(url.lastPathComponent)")
+        }
+        return UpscaleJobSpec(source: source, target: spec.target, quality: spec.quality,
+                              variant: spec.variant, outputURL: spec.outputURL)
+    }
+
     /// The plan this job runs with: the one saved in its work directory if it has started
     /// before, else a fresh one made now — against memory as it is *now*, with this Mac's
     /// latest measurements — and saved for any later resume.
@@ -84,8 +111,11 @@ public struct SeedVR2JobExecutor: JobExecutor {
         let resolver = SeedVR2Resolver(
             hardware: hardware, calibration: CalibrationStore.load(from: calibrationURL)
         )
+        guard let source = spec.source.resolverSource else {
+            throw StageError.engineFailure(stage: "SeedVR2", detail: "unresolved input")
+        }
         let plan = try resolver.plan(
-            source: spec.source.resolverSource, target: spec.target, quality: spec.quality,
+            source: source, target: spec.target, quality: spec.quality,
             installedVariants: [spec.variant]
         )
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)

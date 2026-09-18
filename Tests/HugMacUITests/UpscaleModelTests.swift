@@ -13,7 +13,7 @@ final class FakeExecutor: JobExecutor, @unchecked Sendable {
     let behaviour: Behaviour
     init(_ behaviour: Behaviour = .succeed) { self.behaviour = behaviour }
 
-    func run(_ job: Job, workDirectory: URL,
+    func run(_ job: Job, context: JobContext,
              progress: @Sendable @escaping (StageProgress) -> Void) async throws -> JobOutcome {
         guard case .upscale(let spec) = job.kind else { throw StageError.cancelled }
         progress(StageProgress(fraction: 0.5, phase: "vae-decode", unitsDone: 1, unitsTotal: 3))
@@ -78,8 +78,8 @@ struct Workspace {
         return url
     }
 
-    func makeImage(width: Int = 320, height: Int = 200) throws -> URL {
-        let url = root.appendingPathComponent("photo.png")
+    func makeImage(width: Int = 320, height: Int = 200, name: String = "photo") throws -> URL {
+        let url = root.appendingPathComponent("\(name).png")
         guard let destination = CGImageDestinationCreateWithURL(
             url as CFURL, UTType.png.identifier as CFString, 1, nil
         ) else { throw CocoaError(.fileWriteUnknown) }
@@ -100,9 +100,11 @@ struct Workspace {
     }
 
     @MainActor
-    func model(executor: JobExecutor = FakeExecutor(), availableGB: Double = 19) -> UpscaleModel {
+    func model(executor: JobExecutor = FakeExecutor(), availableGB: Double = 19,
+               idleGB: Double? = nil) -> UpscaleModel {
+        let idle = Int64((idleGB ?? availableGB) * 1_073_741_824)
         let queue = JobQueue(store: store, executor: executor, activity: NoActivity(),
-                             calibrationURL: calibrationURL)
+                             calibrationURL: calibrationURL, sampleAvailableMemory: { idle })
         return UpscaleModel(
             store: store,
             installer: ModelInstaller(store: store, hub: FakeHubStub(), availableBytes: { 1 << 40 }),
@@ -299,8 +301,8 @@ struct UpscaleModelTests {
         #expect((model.estimatedScratchBytes ?? 0) > 0)
     }
 
-    @Test("Starting while another job runs queues it behind, and both finish")
-    func queuesBehind() async throws {
+    @Test("The same file can be queued again while its first job runs — say, at another size")
+    func queueTwice() async throws {
         let workspace = Workspace(); defer { workspace.cleanUp() }
         workspace.markInstalled()
         let model = workspace.model(executor: FakeExecutor(.slow))
@@ -308,19 +310,79 @@ struct UpscaleModelTests {
         await model.load(try await workspace.makeVideo())
         model.start()
         let first = try #require(model.currentJobID)
-        #expect(!model.canStart, "this screen's own job is still in flight")
-
-        // A second file while the first is still running: it queues behind.
-        await model.load(try workspace.makeImage())
-        #expect(model.willQueue)
-        #expect(model.canStart)
+        #expect(model.canStart, "queuing is never blocked by the job already in the line")
+        // Same file, different setting. (1080p video from this source would need more memory
+        // than the test machine has, so quality is what changes here.)
+        model.quality = .best
         model.start()
         let second = try #require(model.currentJobID)
+        #expect(first != second)
         #expect(model.queue.job(second)?.state == .queued)
-
         await waitUntil { model.queue.job(second)?.state == .completed }
         #expect(model.queue.job(first)?.state == .completed)
         #expect(model.queue.job(second)?.state == .completed)
+    }
+
+    @Test("Several files become a batch; each fitting file is queued as its own job")
+    func batch() async throws {
+        let workspace = Workspace(); defer { workspace.cleanUp() }
+        workspace.markInstalled()
+        let model = workspace.model(executor: FakeExecutor(.slow))
+        await model.refreshModelState()
+        let video = try await workspace.makeVideo()
+        let small = try workspace.makeImage(width: 320, height: 200, name: "small")
+        let big = try workspace.makeImage(width: 1600, height: 1200, name: "big")
+        let text = workspace.root.appendingPathComponent("notes.txt")
+        try Data("hi".utf8).write(to: text)
+
+        await model.load([video, small, big, text])
+        #expect(model.isBatch)
+        #expect(model.batch.count == 3)
+        #expect(model.errorMessage?.contains("notes.txt") == true, "unreadable files are named")
+
+        // Skipped because it's already that size.
+        model.outputSize = .p1080
+        let bigAt1080 = try #require(model.batch.first { $0.input.url == big })
+        #expect(bigAt1080.problem?.contains("Already") == true)
+
+        // Skipped because it won't fit: 1600×1200 doubled is 3200×2400.
+        model.outputSize = .double
+        let bigDoubled = try #require(model.batch.first { $0.input.url == big })
+        #expect(bigDoubled.problem?.contains("GB") == true)
+        #expect(model.batchQueueableCount == 2)
+
+        model.addBatchToQueue()
+        #expect(model.queue.jobs.count == 2)
+        #expect(model.batchMessage?.contains("Queued 2 jobs") == true)
+        #expect(model.batchMessage?.contains("skipped 1") == true)
+        #expect(!model.isBatch)
+        await waitUntil { model.queue.activeCount == 0 }
+        #expect(model.queue.jobs.allSatisfy { $0.state == .completed })
+    }
+
+    @Test("While another job runs, the preview is planned for an idle Mac and says so")
+    func provisionalPreview() async throws {
+        let workspace = Workspace(); defer { workspace.cleanUp() }
+        workspace.markInstalled()
+        // 2 GB free while busy would refuse anything; 19 GB was free when idle.
+        let model = workspace.model(executor: FakeExecutor(.waitForCancel), availableGB: 2, idleGB: 19)
+        await model.refreshModelState()
+        await model.load(try await workspace.makeVideo(width: 640, height: 360))
+        #expect(model.plan == nil, "idle and nearly out of memory: honestly refused")
+
+        await model.load(try workspace.makeImage())
+        // Put something heavy in the line, then preview the video again.
+        model.outputSize = .double
+        let blocker = model.queue.enqueue(title: "big", kind: .upscale(UpscaleJobSpec(
+            source: .image(url: workspace.root.appendingPathComponent("photo.png"), width: 320, height: 200),
+            target: .scale(2), quality: .balanced, variant: .threeBInt8,
+            outputURL: workspace.store.outputsDirectory.appendingPathComponent("big.png"))))
+        await waitUntil { model.queue.running?.id == blocker.id }
+        await model.load(try await workspace.makeVideo(width: 640, height: 360))
+        #expect(model.plan != nil, "planned for the memory free when the Mac is idle")
+        #expect(model.planIsProvisional)
+        #expect(model.canStart)
+        model.queue.cancel(blocker.id)
     }
 
     @Test("Pause and resume from the screen go through the queue")

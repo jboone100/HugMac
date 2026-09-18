@@ -22,9 +22,11 @@ public final class AppModel {
     public static func live() -> AppModel {
         let store = ModelStore()
         let calibrationURL = CalibrationStore.defaultURL()
+        // One engine per kind of job, all sharing one line. Text-to-video has a job type but
+        // no engine yet, so it isn't registered — the queue reports that rather than crash.
         let queue = JobQueue(
             store: store,
-            executor: SeedVR2JobExecutor(store: store, calibrationURL: calibrationURL),
+            executors: ["upscale": SeedVR2JobExecutor(store: store, calibrationURL: calibrationURL)],
             calibration: CalibrationStore.load(from: calibrationURL),
             calibrationURL: calibrationURL,
             observeThermalState: true

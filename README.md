@@ -9,10 +9,10 @@ installer**, ported from MLXUI's `InstallManager`.
 
 | Target | What's in it | Status |
 |---|---|---|
-| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 80 tests pass |
+| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 95 tests pass |
 | `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
-| `HugMacCore/Jobs` | the **job queue**: persistent, serial, resumable, keep-awake, heat-aware | 12 tests |
-| `HugMacUI` | the **Upscale** and **Jobs** screens and their models | 13 tests |
+| `HugMacCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
+| `HugMacUI` | the **Upscale** (single or batch) and **Jobs** screens and their models | 15 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `hugmac-bench` | the acceptance benchmark, `--install`, `--extract` | builds |
 
@@ -59,20 +59,25 @@ bundle, without anyone clicking.
 
 ## Jobs
 
-An upscale is a **job** on an app-wide queue (plan §5.9), so it outlives the window that
-started it.
+Heavy work runs on one app-wide queue (plan §5.9): queue as many jobs as you like, of any kind,
+and they run **one at a time**.
 
-- **Serial** — one job at a time; each was planned against the whole machine. A job queued
-  behind another is planned when it *starts*, against the memory free then.
-- **Persistent** — every job is `jobs/<id>/job.json`. A job running when the app died comes
-  back *interrupted*; one running at quit comes back *paused*.
-- **Resumable** — Pause keeps the job's checkpoints; Resume skips everything already done.
-  Every phase checkpoints per chunk — encode and transformer as latents, decode as a video
-  segment plus the frames held back for the next cross-fade — and the segments are joined
-  without re-encoding. A crash mid-decode resumes at the chunk it was on.
-- **Awake, and heat-aware** — the Mac is held awake while a job runs; a *critical* thermal
-  state pauses the job and cooling to *fair* resumes it.
-- **Notifies** when a job finishes or fails, and feeds its measurements into the next plan.
+- **Many kinds, one line** — each kind (`upscale` today; `text-to-video` has its job type and
+  chaining, its engine comes later) has its own executor; only one job of any kind runs.
+- **Chains** — a job can take another job's output as input and wait for it (text-to-video →
+  upscale). If the first fails, the second waits for a retry; if it's cancelled, the second
+  fails and says why. A blocked job never holds up the jobs behind it.
+- **Queue from anywhere** — *Add to queue* is always available; drop several files for one job
+  each; queue the same file again at another setting.
+- **Arrange it** — drag to reorder, hold a job, pause the whole queue after the current job,
+  clear finished jobs.
+- **Planned when it starts** — a waiting job is planned against the memory free when its turn
+  comes; previews shown while another job runs are labelled provisional.
+- **Persistent and resumable** — `jobs/<id>/job.json`; a crash comes back *interrupted*, a quit
+  *paused*; every phase checkpoints per chunk, and a resumed job skips finished work.
+- **Awake, heat-aware, notifies** — and feeds each job's measurements into the next plan.
+
+Model downloads aren't in the line — they use the network and disk, not the GPU.
 
 ## Installing models
 

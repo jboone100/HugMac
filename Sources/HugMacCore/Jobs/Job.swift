@@ -11,18 +11,24 @@ public struct UpscaleJobSpec: Codable, Sendable, Equatable {
     public enum Source: Codable, Sendable, Equatable {
         case video(VideoMedia)
         case image(url: URL, width: Int, height: Int)
+        /// Whatever another job produced — the second half of a chain such as
+        /// text-to-video → upscale. Resolved when this job starts, from that job's outcome.
+        case outputOf(jobID: UUID)
 
-        public var url: URL {
+        public var url: URL? {
             switch self {
             case .video(let video): video.url
             case .image(let url, _, _): url
+            case .outputOf: nil
             }
         }
 
-        public var resolverSource: SeedVR2Resolver.Source {
+        /// What the resolver plans against. `nil` until an `.outputOf` source is resolved.
+        public var resolverSource: SeedVR2Resolver.Source? {
             switch self {
             case .video(let video): .video(video)
             case .image(_, let width, let height): .image(width: width, height: height)
+            case .outputOf: nil
             }
         }
     }
@@ -41,6 +47,34 @@ public struct UpscaleJobSpec: Codable, Sendable, Equatable {
         self.target = target
         self.quality = quality
         self.variant = variant
+        self.outputURL = outputURL
+    }
+}
+
+/// What a text-to-video (or image-to-video) job was asked to do.
+///
+/// Defined ahead of its engine so the queue, chaining and persistence are built for it now;
+/// no executor is registered for it yet (plan §6.6 — Wan, then H3).
+public struct TextToVideoJobSpec: Codable, Sendable, Equatable {
+    public let model: String
+    public let prompt: String
+    /// First frame, for image-to-video.
+    public let startImage: URL?
+    public let seconds: Double
+    public let shortSide: Int
+    public let seed: UInt64
+    public let outputURL: URL
+
+    public init(
+        model: String, prompt: String, startImage: URL? = nil, seconds: Double,
+        shortSide: Int, seed: UInt64 = 42, outputURL: URL
+    ) {
+        self.model = model
+        self.prompt = prompt
+        self.startImage = startImage
+        self.seconds = seconds
+        self.shortSide = shortSide
+        self.seed = seed
         self.outputURL = outputURL
     }
 }
@@ -64,10 +98,37 @@ public struct JobOutcome: Codable, Sendable, Equatable {
 public struct Job: Codable, Sendable, Equatable, Identifiable {
     public enum Kind: Codable, Sendable, Equatable {
         case upscale(UpscaleJobSpec)
+        case textToVideo(TextToVideoJobSpec)
+
+        /// Which engine runs it. Every kind shares one line: only one job of *any* kind runs
+        /// at a time.
+        public var engineID: String {
+            switch self {
+            case .upscale: "upscale"
+            case .textToVideo: "text-to-video"
+            }
+        }
+
+        public var displayName: String {
+            switch self {
+            case .upscale(let spec):
+                if case .image = spec.source { return "Image upscale" }
+                return "Video upscale"
+            case .textToVideo(let spec):
+                return spec.startImage == nil ? "Text to video" : "Image to video"
+            }
+        }
+
+        public var outputURL: URL {
+            switch self {
+            case .upscale(let spec): spec.outputURL
+            case .textToVideo(let spec): spec.outputURL
+            }
+        }
     }
 
     public enum State: String, Codable, Sendable {
-        /// Waiting its turn.
+        /// Waiting its turn (or waiting for the job it depends on).
         case queued
         case running
         /// Stopped on purpose — by the user, or by the queue (the Mac got too hot, the app
@@ -93,11 +154,13 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
 
     public let id: UUID
     public let createdAt: Date
-    /// Queue position, assigned at enqueue. Order comes from this, not from `createdAt`:
-    /// jobs queued in quick succession can share a timestamp.
+    /// Queue position, assigned at enqueue and changed by reordering. Order comes from this,
+    /// not from `createdAt`: jobs queued in quick succession can share a timestamp.
     public var sequence = 0
     public var title: String
     public var kind: Kind
+    /// A job that must complete first — and whose output this one may use as its input.
+    public var dependsOn: UUID?
     public var state: State
     public var progress = Progress()
     /// Time actually spent running, summed across resumes.
@@ -110,21 +173,38 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
     /// How many times this job has been started — more than one means it resumed.
     public var attempts = 0
 
-    public init(id: UUID = UUID(), title: String, kind: Kind, createdAt: Date = Date()) {
+    public init(
+        id: UUID = UUID(), title: String, kind: Kind, dependsOn: UUID? = nil,
+        createdAt: Date = Date()
+    ) {
         self.id = id
         self.createdAt = createdAt
         self.title = title
         self.kind = kind
+        self.dependsOn = dependsOn
         self.state = .queued
     }
 }
 
+/// What an executor gets besides the job itself.
+public struct JobContext: Sendable {
+    /// Where this job's checkpoints live; anything already here is resumed from.
+    public let workDirectory: URL
+    /// Outputs of the jobs this one depends on, by job id.
+    public let dependencyOutputs: [UUID: URL]
+
+    public init(workDirectory: URL, dependencyOutputs: [UUID: URL] = [:]) {
+        self.workDirectory = workDirectory
+        self.dependencyOutputs = dependencyOutputs
+    }
+}
+
 /// Runs one kind of job. The queue owns ordering, persistence, keep-awake and cancellation;
-/// an executor only does the work, resuming from anything already in `workDirectory`.
+/// an executor only does the work, resuming from anything already in its work directory.
 public protocol JobExecutor: Sendable {
     func run(
         _ job: Job,
-        workDirectory: URL,
+        context: JobContext,
         progress: @Sendable @escaping (StageProgress) -> Void
     ) async throws -> JobOutcome
 }

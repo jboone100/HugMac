@@ -104,6 +104,22 @@ public final class UpscaleModel {
 
     /// The preview shown on the plan card.
     public private(set) var plan: SeedVR2Plan?
+    /// True while another job is running: the preview is planned against the memory free
+    /// when the Mac was last idle, and the job is planned for real when it starts.
+    public private(set) var planIsProvisional = false
+
+    /// Several files at once, sharing one Output and Quality choice.
+    public struct BatchItem: Identifiable, Equatable {
+        public let id = UUID()
+        public let input: Input
+        public var plan: SeedVR2Plan?
+        /// Why this file won't be queued: too big for this Mac now, or the chosen size
+        /// wouldn't enlarge it.
+        public var problem: String?
+    }
+    public private(set) var batch: [BatchItem] = []
+    /// A one-line result after a batch is queued.
+    public private(set) var batchMessage: String?
     /// Why no plan: set when the resolver refuses, with its numbers.
     public private(set) var refusal: String?
     public private(set) var modelState: ModelState = .checking
@@ -137,6 +153,7 @@ public final class UpscaleModel {
         // A finished job has just recorded measurements; the preview should use them now,
         // not the next time a setting changes.
         queue.onFinished { [weak self] _ in self?.replan() }
+        observeQueue()
     }
 
     // MARK: - Derived from the job
@@ -166,13 +183,25 @@ public final class UpscaleModel {
     public var willQueue: Bool { queue.running != nil }
 
     public var availableOutputSizes: [OutputSize] {
-        guard let input else { return OutputSize.allCases }
+        guard !isBatch, let input else { return OutputSize.allCases }
         let shortSide = min(input.width, input.height)
         return OutputSize.allCases.filter { $0.enlarges(shortSide: shortSide) }
     }
 
+    /// Queuing is always allowed: jobs run one at a time, so adding one never competes with
+    /// the one running.
     public var canStart: Bool {
-        plan != nil && modelState == .installed && input != nil && !isRunning
+        plan != nil && modelState == .installed && input != nil
+    }
+
+    public var isBatch: Bool { !batch.isEmpty }
+
+    public var batchQueueableCount: Int {
+        batch.filter { $0.plan != nil && $0.problem == nil }.count
+    }
+
+    public var canQueueBatch: Bool {
+        modelState == .installed && batchQueueableCount > 0
     }
 
     /// Rough output size: source bytes scaled by the pixel ratio. On the owner's clip this
@@ -218,9 +247,68 @@ public final class UpscaleModel {
         replan()
     }
 
+    /// Load one file for a preview, or several as a batch.
+    public func load(_ urls: [URL]) async {
+        guard urls.count > 1 else {
+            if let url = urls.first { await load(url) }
+            return
+        }
+        loadError = nil
+        batchMessage = nil
+        isLoadingInput = true
+        defer { isLoadingInput = false }
+        clearInput()
+        var items: [BatchItem] = []
+        var unreadable: [String] = []
+        for url in urls {
+            if let input = await Self.probe(url) {
+                items.append(BatchItem(input: input))
+            } else {
+                unreadable.append(url.lastPathComponent)
+            }
+        }
+        batch = items
+        if !unreadable.isEmpty {
+            loadError = "Skipped \(unreadable.count) file\(unreadable.count == 1 ? "" : "s") HugMac can't read: "
+                + unreadable.joined(separator: ", ")
+        }
+        replan()
+    }
+
+    /// Queue every file in the batch that fits, with the shared settings.
+    public func addBatchToQueue() {
+        guard canQueueBatch else { return }
+        var queued = 0
+        for item in batch where item.problem == nil {
+            guard let plan = item.plan else { continue }
+            enqueue(item.input, plan: plan)
+            queued += 1
+        }
+        let skipped = batch.count - queued
+        batchMessage = "Queued \(queued) job\(queued == 1 ? "" : "s")"
+            + (skipped > 0 ? "; skipped \(skipped) that won't fit or wouldn't be enlarged." : ".")
+            + " Follow them under Jobs."
+        batch = []
+    }
+
+    static func probe(_ url: URL) async -> Input? {
+        let type = UTType(filenameExtension: url.pathExtension.lowercased())
+        if type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true {
+            return (try? await VideoIO.probe(url)).map { .video($0) }
+        }
+        if type?.conforms(to: .image) == true,
+           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            return .image(url: url, width: image.width, height: image.height)
+        }
+        return nil
+    }
+
     /// Load a video or image. Anything else is refused with a sentence, not a crash.
     public func load(_ url: URL) async {
         loadError = nil
+        batchMessage = nil
+        batch = []
         isLoadingInput = true
         defer { isLoadingInput = false }
 
@@ -258,23 +346,56 @@ public final class UpscaleModel {
         refusal = nil
         loadError = nil
         currentJobID = nil
+        batch = []
     }
 
     /// Re-resolve the preview plan. Cheap — the resolver is arithmetic — so it runs on every
     /// change, and samples available memory afresh each time.
     public func replan() {
-        guard let input else { return }
-        hardware = detectHardware()
+        guard input != nil || isBatch else { return }
+        let measured = detectHardware()
+        // While a job runs it holds most of the memory; the job being previewed will get the
+        // whole Mac when its turn comes, so plan against what was free when it was idle.
+        let plannable = queue.plannableAvailableBytes(current: measured.availableMemoryBytes)
+        planIsProvisional = queue.running != nil
+        hardware = HardwareProfile(
+            chipName: measured.chipName, generation: measured.generation, tier: measured.tier,
+            gpuCoreCount: measured.gpuCoreCount, memoryBandwidthGBps: measured.memoryBandwidthGBps,
+            totalMemoryBytes: measured.totalMemoryBytes, availableMemoryBytes: plannable,
+            gpuWiredLimitBytes: measured.gpuWiredLimitBytes, macOSVersion: measured.macOSVersion
+        )
         let resolver = SeedVR2Resolver(hardware: hardware, calibration: queue.calibration)
-        do {
-            plan = try resolver.plan(
-                source: input.jobSource.resolverSource, target: outputSize.target,
-                quality: quality, installedVariants: [variant]
-            )
-            refusal = nil
-        } catch {
-            plan = nil
-            refusal = String(describing: error)
+
+        if let input {
+            do {
+                plan = try resolver.plan(
+                    source: input.jobSource.resolverSource ?? .image(width: input.width, height: input.height),
+                    target: outputSize.target, quality: quality, installedVariants: [variant]
+                )
+                refusal = nil
+            } catch {
+                plan = nil
+                refusal = String(describing: error)
+            }
+        }
+
+        for index in batch.indices {
+            let item = batch[index].input
+            guard outputSize.enlarges(shortSide: min(item.width, item.height)) else {
+                batch[index].plan = nil
+                batch[index].problem = "Already \(outputSize.label) or larger"
+                continue
+            }
+            do {
+                batch[index].plan = try resolver.plan(
+                    source: item.jobSource.resolverSource ?? .image(width: item.width, height: item.height),
+                    target: outputSize.target, quality: quality, installedVariants: [variant]
+                )
+                batch[index].problem = nil
+            } catch {
+                batch[index].plan = nil
+                batch[index].problem = String(describing: error)
+            }
         }
     }
 
@@ -309,16 +430,22 @@ public final class UpscaleModel {
         modelState = .notInstalled
     }
 
-    /// Put an upscale on the queue. It starts now if nothing else is running.
+    /// Put an upscale on the queue. It starts now if nothing else is running, and can be
+    /// pressed again — for another size of the same file — while it waits.
     public func start() {
         guard canStart, let input, let plan else { return }
         loadError = nil
+        currentJobID = enqueue(input, plan: plan)
+    }
+
+    @discardableResult
+    private func enqueue(_ input: Input, plan: SeedVR2Plan) -> UUID {
         let spec = UpscaleJobSpec(
             source: input.jobSource, target: outputSize.target, quality: quality,
             variant: variant, outputURL: outputURL(for: input, plan: plan)
         )
         let title = "\(input.url.lastPathComponent) → \(plan.outputWidth)×\(plan.outputHeight)"
-        currentJobID = queue.enqueue(title: title, kind: .upscale(spec)).id
+        return queue.enqueue(title: title, kind: .upscale(spec)).id
     }
 
     /// Stop at the next checkpoint, keeping the work done so far.
@@ -336,6 +463,19 @@ public final class UpscaleModel {
     }
 
     // MARK: - Internals
+
+    /// Re-plan whenever the running job changes — the memory basis and the provisional label
+    /// depend on it.
+    private func observeQueue() {
+        withObservationTracking {
+            _ = queue.running?.id
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.replan()
+                self?.observeQueue()
+            }
+        }
+    }
 
     static func phaseLabel(_ phase: String) -> String {
         switch phase {

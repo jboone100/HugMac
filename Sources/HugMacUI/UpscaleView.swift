@@ -18,10 +18,16 @@ public struct UpscaleView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
                 inputSection
-                if model.input != nil {
+                if model.isBatch {
+                    optionsSection
+                    BatchList(model: model)
+                } else if model.input != nil {
                     optionsSection
                     PlanCard(model: model)
                     runSection
+                }
+                if let message = model.batchMessage {
+                    Label(message, systemImage: "tray.and.arrow.down.fill").foregroundStyle(.secondary)
                 }
                 if let outcome = model.outcome {
                     ResultPanel(outcome: outcome, plan: model.plan, isVideo: model.input?.isVideo ?? true)
@@ -35,9 +41,10 @@ public struct UpscaleView: View {
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .fileImporter(isPresented: $isImporting, allowedContentTypes: [.movie, .image]) { result in
-            if case .success(let url) = result {
-                Task { await model.load(url) }
+        .fileImporter(isPresented: $isImporting, allowedContentTypes: [.movie, .image],
+                      allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result {
+                Task { await model.load(urls) }
             }
         }
         .task { await model.refreshModelState() }
@@ -56,7 +63,15 @@ public struct UpscaleView: View {
     // MARK: - Input
 
     @ViewBuilder private var inputSection: some View {
-        if let input = model.input {
+        if model.isBatch {
+            HStack {
+                Text("\(model.batch.count) files").font(.headline)
+                Spacer()
+                Button("Replace…") { isImporting = true }
+                Button("Clear") { model.clearInput() }
+            }
+            .controlSize(.small)
+        } else if let input = model.input {
             HStack(alignment: .center, spacing: 16) {
                 Thumbnail(image: model.thumbnail)
                     .frame(width: 176, height: 99)
@@ -81,7 +96,9 @@ public struct UpscaleView: View {
     private var dropZone: some View {
         VStack(spacing: 10) {
             Image(systemName: "film.stack").font(.system(size: 34)).foregroundStyle(.secondary)
-            Text("Drop a video or image here").font(.headline)
+            Text("Drop videos or images here").font(.headline)
+            Text("Several at once queue one job each; they run one at a time.")
+                .font(.caption).foregroundStyle(.secondary)
             Button("Choose…") { isImporting = true }
             if model.isLoadingInput { ProgressView().controlSize(.small) }
         }
@@ -96,8 +113,8 @@ public struct UpscaleView: View {
                 .fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
         )
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first else { return false }
-            Task { await model.load(url) }
+            guard !urls.isEmpty else { return false }
+            Task { await model.load(urls) }
             return true
         } isTargeted: { isTargeted = $0 }
     }
@@ -167,6 +184,13 @@ public struct UpscaleView: View {
     // MARK: - Run
 
     @ViewBuilder private var runSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            jobStatus
+            startButton
+        }
+    }
+
+    @ViewBuilder private var jobStatus: some View {
         if let job = model.currentJob, job.state == .queued || job.state == .running || job.state == .paused || job.state == .interrupted {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 VStack(alignment: .leading, spacing: 8) {
@@ -190,12 +214,15 @@ public struct UpscaleView: View {
                     Text(footnote(job)).font(.caption).foregroundStyle(.secondary)
                 }
             }
-        } else {
+        }
+    }
+
+    private var startButton: some View {
             HStack {
                 Button {
                     model.start()
                 } label: {
-                    Label(model.willQueue ? "Add to queue" : "Upscale",
+                    Label(model.willQueue || model.isRunning ? "Add to queue" : "Upscale",
                           systemImage: "arrow.up.left.and.arrow.down.right")
                         .frame(minWidth: 120)
                 }
@@ -206,11 +233,10 @@ public struct UpscaleView: View {
                 if let blocked = startBlockedReason {
                     Text(blocked).font(.callout).foregroundStyle(.secondary)
                 } else if model.willQueue {
-                    Text("Another job is running; this one starts when it finishes, planned for the memory free then.")
+                    Text("Jobs run one at a time — this one waits its turn, and is planned for the memory free when it starts.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
-        }
     }
 
     private var startBlockedReason: String? {
@@ -221,7 +247,9 @@ public struct UpscaleView: View {
 
     private func runLabel(_ job: Job) -> String {
         switch job.state {
-        case .queued: return "Waiting for the job ahead of it"
+        case .queued:
+            if let blocker = model.queue.blocker(for: job.id) { return "Waiting for \(blocker.title)" }
+            return model.queue.isPaused ? "Queued — the queue is paused" : "Queued — waiting its turn"
         case .paused: return "Paused" + (job.note.map { " — \($0)" } ?? "")
         case .interrupted: return "Interrupted — resumes from its last checkpoint"
         default: break
@@ -302,6 +330,11 @@ struct PlanCard: View {
                     }
                     .foregroundStyle(.red)
                 } else if let plan = model.plan {
+                    if model.planIsProvisional {
+                        Label("Another job is running, so this is planned for the memory free when the Mac is idle. The job is planned for real when it starts.",
+                              systemImage: "clock")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                     phases(plan)
                     MemoryBar(peak: plan.peakBytes,
                               budget: model.hardware.plannableMemoryBytes(),
@@ -573,5 +606,57 @@ struct PlayerView: NSViewRepresentable {
 
     static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
         view.player?.pause()
+    }
+}
+
+// MARK: - Batch
+
+/// Several files sharing one Output and Quality: what each becomes, and which won't be queued.
+struct BatchList: View {
+    let model: UpscaleModel
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(model.batch) { item in
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: item.input.isVideo ? "film" : "photo")
+                            .foregroundStyle(.secondary)
+                        Text(item.input.url.lastPathComponent).lineLimit(1)
+                        Spacer()
+                        if let plan = item.plan, item.problem == nil {
+                            Text("\(item.input.width)×\(item.input.height) → \(plan.outputWidth)×\(plan.outputHeight)")
+                                .monospacedDigit().foregroundStyle(.secondary)
+                            Text("peak \(Format.bytes(plan.peakBytes))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text(item.problem ?? "—").font(.caption).foregroundStyle(.orange)
+                                .lineLimit(2).multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 320, alignment: .trailing)
+                        }
+                    }
+                    .font(.callout)
+                }
+                Divider()
+                HStack {
+                    Button {
+                        model.addBatchToQueue()
+                    } label: {
+                        Label("Add \(model.batchQueueableCount) to queue", systemImage: "tray.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canQueueBatch)
+                    if model.modelState != .installed {
+                        Text("Install the model first.").font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        Text("They run one at a time, each planned for the memory free when it starts.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(6)
+        } label: {
+            Label("Batch", systemImage: "square.stack")
+        }
     }
 }
