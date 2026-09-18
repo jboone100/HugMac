@@ -416,7 +416,7 @@ struct PlanCard: View {
         VStack(alignment: .leading, spacing: 4) {
             if let total = plan.totalTime.seconds {
                 Text("About \(Format.duration(total))").font(.title3.weight(.semibold))
-                    + Text("  predicted from runs on this Mac").font(.caption).foregroundColor(.secondary)
+                    + Text("  " + Self.timeSource(plan.totalTime)).font(.caption).foregroundColor(.secondary)
             } else {
                 Text("Time unknown until the first run on this Mac").font(.callout.weight(.medium))
             }
@@ -426,6 +426,14 @@ struct PlanCard: View {
             Text(chunkNote + " · VAE " + tiling(plan))
                 .font(.callout).foregroundStyle(.secondary)
             Text(diskLine).font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    static func timeSource(_ time: TimeEstimate) -> String {
+        switch time {
+        case .extrapolated(_, let chip, .probes): "estimated from an \(chip), scaled by this Mac's measured speed"
+        case .extrapolated(_, let chip, .specs): "estimated from an \(chip), scaled by spec sheet"
+        default: "predicted from runs on this Mac"
         }
     }
 

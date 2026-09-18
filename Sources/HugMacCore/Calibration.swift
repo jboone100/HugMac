@@ -3,8 +3,8 @@ import Foundation
 /// A measurement from a real run on this machine: how long a phase took and how much memory
 /// it peaked at, for a known amount of work.
 ///
-/// This is what turns HugMac's estimates from guesses into predictions, and it is local-only
-/// — no telemetry leaves the machine.
+/// This is what turns HugMac's estimates from guesses into predictions. It is stored locally;
+/// the only way it leaves the Mac is as an opt-in performance report (plan §5.15).
 public struct CalibrationSample: Sendable, Codable, Equatable {
     /// Which engine produced this. Distinct engines are never mixed: the owner's ComfyUI
     /// baseline ran PyTorch on MPS, so it cannot be used to predict the MLX engine.
@@ -27,6 +27,11 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
     /// activation cost can be measured on its own.
     public let weightBytes: Int64
     public let chipName: String
+    /// GPU cores and memory of the Mac that measured this. `nil` in samples recorded before
+    /// machines were keyed on more than the chip's name; those are read as belonging to any
+    /// Mac with that chip until newer ones supersede them.
+    public let gpuCores: Int?
+    public let memoryGB: Int?
     public let note: String
 
     public init(
@@ -38,6 +43,8 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
         peakBytes: Int64,
         weightBytes: Int64 = 0,
         chipName: String,
+        gpuCores: Int? = nil,
+        memoryGB: Int? = nil,
         note: String = ""
     ) {
         self.engineID = engineID
@@ -48,7 +55,27 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
         self.peakBytes = peakBytes
         self.weightBytes = weightBytes
         self.chipName = chipName
+        self.gpuCores = gpuCores
+        self.memoryGB = memoryGB
         self.note = note
+    }
+
+    public init(
+        engineID: String, phase: String, workUnits: Double, peakUnits: Double = 0,
+        seconds: Double, peakBytes: Int64, weightBytes: Int64 = 0,
+        machine: MachineKey, note: String = ""
+    ) {
+        self.init(
+            engineID: engineID, phase: phase, workUnits: workUnits, peakUnits: peakUnits,
+            seconds: seconds, peakBytes: peakBytes, weightBytes: weightBytes,
+            chipName: machine.chipName, gpuCores: machine.gpuCores, memoryGB: machine.memoryGB,
+            note: note
+        )
+    }
+
+    /// The Mac this was measured on, as far as the sample records it.
+    public var machine: MachineKey {
+        MachineKey(chipName: chipName, gpuCores: gpuCores, memoryGB: memoryGB ?? 0)
     }
 
     public var secondsPerUnit: Double { workUnits > 0 ? seconds / workUnits : 0 }
@@ -66,24 +93,70 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
 /// rather than inventing a number.
 public enum TimeEstimate: Sendable, Equatable, Codable {
     case unknown
+    /// From this Mac's own runs of this engine.
     case measured(seconds: Double)
-    case extrapolated(seconds: Double, fromChip: String)
+    /// Another Mac's measurement, scaled to this one — by the ratio of the two Macs'
+    /// first-run probe results when both have them, or by their specifications otherwise.
+    case extrapolated(seconds: Double, fromChip: String, basis: ScalingBasis)
 
     public var seconds: Double? {
         switch self {
         case .unknown: nil
         case .measured(let s): s
-        case .extrapolated(let s, _): s
+        case .extrapolated(let s, _, _): s
         }
     }
+
+    /// Sum of several estimates, as trustworthy as the weakest of them.
+    public static func sum(_ parts: [TimeEstimate]) -> TimeEstimate {
+        var total = 0.0
+        var weakest: (chip: String, basis: ScalingBasis)?
+        for part in parts {
+            switch part {
+            case .unknown:
+                return .unknown
+            case .measured(let s):
+                total += s
+            case .extrapolated(let s, let chip, let basis):
+                total += s
+                if let current = weakest, current.basis <= basis { continue }
+                weakest = (chip, basis)
+            }
+        }
+        guard let weakest else { return .measured(seconds: total) }
+        return .extrapolated(seconds: total, fromChip: weakest.chip, basis: weakest.basis)
+    }
+}
+
+/// How a timing measured on one Mac was carried to another, most trustworthy last.
+public enum ScalingBasis: String, Sendable, Codable, Comparable {
+    /// Ratios of spec-sheet figures: GPU cores × a per-generation factor, or bandwidth.
+    case specs
+    /// Ratios of the two Macs' measured first-run probe results.
+    case probes
+
+    private var rank: Int { self == .specs ? 0 : 1 }
+    public static func < (lhs: ScalingBasis, rhs: ScalingBasis) -> Bool { lhs.rank < rhs.rank }
 }
 
 /// Per-machine calibration history.
 public struct CalibrationStore: Sendable {
     public internal(set) var samples: [CalibrationSample]
+    /// Other Macs' measurements, used to estimate what this one hasn't run yet. Empty unless
+    /// set — `load(from:)` supplies the bundled `ReferenceMachine.all`.
+    public var reference: [ReferenceMachine]
+    /// This Mac's first-run probe results (and any others'), which scale `reference` timings
+    /// more faithfully than spec sheets can.
+    public var probes: ProbeStore
 
-    public init(samples: [CalibrationSample] = []) {
+    public init(
+        samples: [CalibrationSample] = [],
+        reference: [ReferenceMachine] = [],
+        probes: ProbeStore = ProbeStore()
+    ) {
         self.samples = samples
+        self.reference = reference
+        self.probes = probes
     }
 
     public mutating func record(_ sample: CalibrationSample) {
@@ -92,9 +165,20 @@ public struct CalibrationStore: Sendable {
 
     /// Seconds per work unit for an engine's phase on this chip, newest samples weighted by
     /// simple mean. Returns nil when this engine has never run here.
+    public func secondsPerUnit(engineID: String, phase: String, machine: MachineKey) -> Double? {
+        Self.secondsPerUnit(in: samples, engineID: engineID, phase: phase, machine: machine)
+    }
+
     public func secondsPerUnit(engineID: String, phase: String, chipName: String) -> Double? {
-        let matches = samples.filter {
-            $0.engineID == engineID && $0.phase == phase && $0.chipName == chipName && $0.workUnits > 0
+        secondsPerUnit(engineID: engineID, phase: phase, machine: MachineKey(chipName: chipName))
+    }
+
+    static func secondsPerUnit(
+        in samples: [CalibrationSample], engineID: String, phase: String, machine: MachineKey?
+    ) -> Double? {
+        let matches = samples.filter { sample in
+            sample.engineID == engineID && sample.phase == phase && sample.workUnits > 0
+                && (machine.map { sample.machine.runsLike($0) } ?? true)
         }
         guard !matches.isEmpty else { return nil }
         return matches.map(\.secondsPerUnit).reduce(0, +) / Double(matches.count)
@@ -103,9 +187,13 @@ public struct CalibrationStore: Sendable {
     /// Measured activation bytes per peak unit, or nil when this engine's phase has never
     /// run here. This is what replaces the fitted constants in the memory model.
     public func bytesPerPeakUnit(engineID: String, phase: String, chipName: String) -> Double? {
+        bytesPerPeakUnit(engineID: engineID, phase: phase, machine: MachineKey(chipName: chipName))
+    }
+
+    public func bytesPerPeakUnit(engineID: String, phase: String, machine: MachineKey) -> Double? {
         let values = samples.compactMap { sample -> Double? in
             guard sample.engineID == engineID, sample.phase == phase,
-                  sample.chipName == chipName else { return nil }
+                  sample.machine.runsLike(machine) else { return nil }
             return sample.bytesPerPeakUnit
         }
         guard !values.isEmpty else { return nil }
@@ -129,9 +217,17 @@ public struct CalibrationStore: Sendable {
     public func predictedActivation(
         engineID: String, phase: String, chipName: String, peakUnits: Double
     ) -> (bytes: Double, extrapolatedAbove: Bool)? {
+        predictedActivation(
+            engineID: engineID, phase: phase, machine: MachineKey(chipName: chipName), peakUnits: peakUnits
+        )
+    }
+
+    public func predictedActivation(
+        engineID: String, phase: String, machine: MachineKey, peakUnits: Double
+    ) -> (bytes: Double, extrapolatedAbove: Bool)? {
         var bySize: [Double: Double] = [:]
         for sample in samples where sample.engineID == engineID && sample.phase == phase
-            && sample.chipName == chipName && sample.peakUnits > 0 {
+            && sample.machine.runsLike(machine) && sample.peakUnits > 0 {
             let activation = Double(sample.peakBytes - sample.weightBytes)
             guard activation > 0 else { continue }
             bySize[sample.peakUnits] = max(bySize[sample.peakUnits] ?? 0, activation)
@@ -162,8 +258,35 @@ public struct CalibrationStore: Sendable {
         chipName: String,
         workUnits: Double
     ) -> TimeEstimate {
-        if let perUnit = secondsPerUnit(engineID: engineID, phase: phase, chipName: chipName) {
+        estimate(engineID: engineID, phase: phase, machine: MachineKey(chipName: chipName), workUnits: workUnits)
+    }
+
+    /// Time for `workUnits` of a phase on `machine`: this Mac's own measurement when it has
+    /// one; otherwise a reference Mac's, scaled to this one; otherwise unknown.
+    public func estimate(
+        engineID: String,
+        phase: String,
+        machine: MachineKey,
+        workUnits: Double
+    ) -> TimeEstimate {
+        if let perUnit = secondsPerUnit(engineID: engineID, phase: phase, machine: machine) {
             return .measured(seconds: perUnit * workUnits)
+        }
+        // Prefer a reference Mac with the same chip — the scaling has least to do.
+        let candidates = reference.sorted { a, _ in a.machine.chipName == machine.chipName }
+        for ref in candidates {
+            guard let perUnit = Self.secondsPerUnit(
+                in: ref.samples, engineID: engineID, phase: phase, machine: nil
+            ) else { continue }
+            let scale = MachineScaling.factor(
+                from: ref.machine, fromProbes: ref.probes,
+                to: machine, toProbes: probes.latest(for: machine),
+                phase: phase
+            )
+            return .extrapolated(
+                seconds: perUnit * workUnits * scale.factor,
+                fromChip: ref.machine.chipName, basis: scale.basis
+            )
         }
         return .unknown
     }
@@ -226,13 +349,17 @@ public extension CalibrationStore {
     }
 
     /// Load measurements, or an empty store when this machine has never run a job.
+    ///
+    /// Also loads the first-run probe results kept beside it and the bundled reference Macs,
+    /// so a Mac that has never run an engine still gets a time estimate, labelled as one.
     static func load(from url: URL? = nil) -> CalibrationStore {
         let location = url ?? defaultURL()
+        let probes = ProbeStore.load(from: ProbeStore.url(besideCalibration: location))
         guard let data = try? Data(contentsOf: location),
               let samples = try? JSONDecoder().decode([CalibrationSample].self, from: data) else {
-            return CalibrationStore()
+            return CalibrationStore(reference: ReferenceMachine.all, probes: probes)
         }
-        return CalibrationStore(samples: samples)
+        return CalibrationStore(samples: samples, reference: ReferenceMachine.all, probes: probes)
     }
 
     func save(to url: URL? = nil) throws {
@@ -252,7 +379,7 @@ public extension CalibrationStore {
         var kept: [String: Int] = [:]
         var result: [CalibrationSample] = []
         for sample in samples.reversed() {
-            let key = "\(sample.engineID)|\(sample.phase)|\(sample.chipName)"
+            let key = "\(sample.engineID)|\(sample.phase)|\(sample.chipName)|\(sample.gpuCores ?? 0)"
             let count = kept[key, default: 0]
             guard count < keepPerKey else { continue }
             kept[key] = count + 1

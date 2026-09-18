@@ -491,7 +491,7 @@ struct TilingPreferenceTests {
             encodeTiling: VAETiling(tileSize: 384, overlap: 64),
             decodeTiling: VAETiling(tileSize: 384, overlap: 64),
             calibration: CalibrationStore(), engineID: SeedVR2Resolver.mlxEngineID,
-            chipName: "Apple M2 Max"
+            machine: MachineKey(chipName: "Apple M2 Max")
         )
         let dit = phases.first { $0.phase == "dit" }
         let gb = Double(dit?.peakBytes ?? 0) / 1_073_741_824

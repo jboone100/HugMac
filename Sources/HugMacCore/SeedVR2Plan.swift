@@ -261,15 +261,9 @@ public struct SeedVR2Plan: Sendable, Equatable, Codable {
     public var peakBytes: Int64 { phases.map(\.peakBytes).max() ?? 0 }
     public var peakGB: Double { Double(peakBytes) / 1_073_741_824 }
 
-    /// Total time, or `.unknown` if any phase is unmeasured on this machine.
-    public var totalTime: TimeEstimate {
-        var total = 0.0
-        for phase in phases {
-            guard let seconds = phase.time.seconds else { return .unknown }
-            total += seconds
-        }
-        return .measured(seconds: total)
-    }
+    /// Total time: measured if every phase is, an estimate as weak as its weakest phase
+    /// otherwise, and `.unknown` if any phase has nothing to go on.
+    public var totalTime: TimeEstimate { TimeEstimate.sum(phases.map(\.time)) }
 }
 
 // MARK: - The resolver
@@ -401,7 +395,7 @@ public struct SeedVR2Resolver: Sendable {
                             chunks: chunks,
                             encodeTiling: encodeTiling, decodeTiling: decodeTiling,
                             calibration: calibration, engineID: engineID,
-                            chipName: hardware.chipName
+                            machine: hardware.machineKey
                         )
                         let peak = phases.map(\.peakBytes).max() ?? 0
                         smallestConsidered = min(smallestConsidered, peak)
@@ -444,10 +438,10 @@ public struct SeedVR2Resolver: Sendable {
                             phases: phases,
                             reasons: planReasons
                         )
-                        // Rank on predicted *seconds* once this machine has measurements,
-                        // which weighs the phases against each other properly (decode costs
-                        // far more per pixel-frame than encode). Before any measurement,
-                        // fall back to raw VAE work units.
+                        // Rank on predicted *seconds* once there are measurements — this
+                        // Mac's own, or a reference Mac's scaled to it — which weighs the
+                        // phases against each other properly (decode costs far more per
+                        // pixel-frame than encode). With none, fall back to raw VAE work units.
                         let predictedSeconds = phases.compactMap { $0.time.seconds }
                         let work: Double = predictedSeconds.count == phases.count
                             ? predictedSeconds.reduce(0, +)
@@ -583,7 +577,7 @@ public struct SeedVR2Resolver: Sendable {
         paddedWidth: Int, paddedHeight: Int,
         chunks: [FrameChunk],
         encodeTiling: VAETiling?, decodeTiling: VAETiling?,
-        calibration: CalibrationStore, engineID: String, chipName: String
+        calibration: CalibrationStore, engineID: String, machine: MachineKey
     ) -> [PhaseEstimate] {
         let chunkLength = chunks.map(\.length).max() ?? 1
         let chunkCount = chunks.count
@@ -634,7 +628,7 @@ public struct SeedVR2Resolver: Sendable {
         ) -> PhaseEstimate {
             let fallback = fallbackBytesPerPeakUnit(name) * peakUnits
             let measured = calibration.predictedActivation(
-                engineID: engineID, phase: name, chipName: chipName, peakUnits: peakUnits
+                engineID: engineID, phase: name, machine: machine, peakUnits: peakUnits
             )
             let activation: Double
             if let measured {
@@ -651,7 +645,7 @@ public struct SeedVR2Resolver: Sendable {
                 peakUnits: peakUnits,
                 weightBytes: weights,
                 time: calibration.estimate(
-                    engineID: engineID, phase: name, chipName: chipName, workUnits: workUnits
+                    engineID: engineID, phase: name, machine: machine, workUnits: workUnits
                 ),
                 peakIsMeasured: measured != nil
             )

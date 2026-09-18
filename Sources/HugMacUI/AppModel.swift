@@ -11,10 +11,12 @@ import UserNotifications
 public final class AppModel {
     public let queue: JobQueue
     public let upscale: UpscaleModel
+    public let machine: MachineModel
 
-    public init(queue: JobQueue, upscale: UpscaleModel) {
+    public init(queue: JobQueue, upscale: UpscaleModel, machine: MachineModel) {
         self.queue = queue
         self.upscale = upscale
+        self.machine = machine
     }
 
     /// The production wiring: the default library, the real installer and engine, this
@@ -33,7 +35,11 @@ public final class AppModel {
         )
         queue.onFinished { job in Notifier.jobFinished(job) }
         let upscale = UpscaleModel(store: store, installer: ModelInstaller(store: store), queue: queue)
-        return AppModel(queue: queue, upscale: upscale)
+        let machine = MachineModel(store: store, queue: queue, calibrationURL: calibrationURL)
+        // A finished job adds measurements and may have installed a model: both change
+        // what the profile says.
+        queue.onFinished { _ in machine.refresh() }
+        return AppModel(queue: queue, upscale: upscale, machine: machine)
     }
 }
 

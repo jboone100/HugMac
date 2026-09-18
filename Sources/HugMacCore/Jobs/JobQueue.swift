@@ -114,6 +114,17 @@ public final class JobQueue {
     }
 
     /// Queued or running.
+    /// New first-run probe results (plan §5.14). Previews scale reference Macs' timings by
+    /// them; a job's own plan reads them from disk when it starts.
+    public func updateProbes(_ probes: ProbeStore) {
+        calibration.probes = probes
+    }
+
+    /// True while a job holds the machine — the probes wait, since they'd measure the job.
+    public var isRunningJob: Bool {
+        jobs.contains { $0.state == .running }
+    }
+
     public var activeCount: Int {
         jobs.filter { $0.state == .queued || $0.state == .running }.count
     }

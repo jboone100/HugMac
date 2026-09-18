@@ -4,17 +4,20 @@ Browse, grade, install and run MLX models on Apple Silicon. The design plan live
 
 ## Current state
 
-Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), and **the model
-installer**, ported from MLXUI's `InstallManager`.
+Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), **the model
+installer**, ported from MLXUI's `InstallManager`, the **job queue**, and the **machine
+profile** with its first-run speed tests (plan §5.13–5.14).
 
 | Target | What's in it | Status |
 |---|---|---|
-| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 95 tests pass |
+| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 117 tests pass |
+| `HugMacCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `HugMacCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `HugMacUI` | the **Upscale** (single or batch) and **Jobs** screens and their models | 15 tests |
+| `HugMacUI` | the **This Mac**, **Upscale** (single or batch) and **Jobs** screens and their models | 18 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
-| `hugmac-bench` | the acceptance benchmark, `--install`, `--extract` | builds |
+| `HugMacMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
+| `hugmac-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile` | builds |
 
 ## Building
 
@@ -78,6 +81,32 @@ and they run **one at a time**.
 - **Awake, heat-aware, notifies** — and feeds each job's measurements into the next plan.
 
 Model downloads aren't in the line — they use the network and disk, not the GPU.
+
+## This Mac
+
+HugMac works out what the Mac it's running on can do, every time it opens (plan §5.13). Nothing
+in it is a table of Mac models, so a chip released after this build still gets a profile.
+
+- **Three layers, most trusted last** — hardware facts; measurements from reference Macs that
+  ship with the app (today one: an M2 Max, 30-core GPU, 32 GB), scaled to this Mac; and this
+  Mac's own runs, which replace the estimates as they arrive.
+- **Memory travels between Macs, time doesn't.** A reference Mac's timings are scaled by the ratio
+  of the two Macs' speed-test results for the kind of work each phase does (3-D convolution for
+  the VAE, matrix multiply for the transformer), or by spec sheet before this Mac is measured.
+  Every time says which.
+- **First-run speed tests** — a few seconds of small MLX kernels, no download. They run on first
+  launch, and again after a macOS upgrade; not on a low battery, a hot Mac, or during a job.
+  Stopping them means they won't start by themselves again.
+- **What this Mac can do** — each task planned with the models installed: *runs now*, *close
+  other apps*, or *too large* with the number it needs; a better model that would fit is named,
+  never downloaded.
+
+```bash
+swift run hugmac-bench --profile   # what the This Mac screen says
+swift run hugmac-bench --probe     # run the speed tests and save them
+```
+
+Results live in `probes.json` beside `calibration.json`, and stay on the Mac.
 
 ## Installing models
 

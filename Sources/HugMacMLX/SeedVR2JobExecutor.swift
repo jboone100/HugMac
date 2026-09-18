@@ -25,7 +25,7 @@ public struct SeedVR2JobExecutor: JobExecutor {
         let workDirectory = context.workDirectory
         let spec = try await Self.resolve(requested, context: context)
         let hardware = HardwareProfile.detect()
-        let chipName = hardware.chipName
+        let machine = hardware.machineKey
         let plan = try Self.plan(for: spec, in: workDirectory, hardware: hardware,
                                  calibrationURL: calibrationURL)
         let components = SeedVR2Components(directory: store.directory(forRepo: plan.variant.hfRepo))
@@ -38,7 +38,7 @@ public struct SeedVR2JobExecutor: JobExecutor {
         case .video(let video):
             let result = try await SeedVR2Engine.upscale(
                 video: video, plan: plan, components: components, residency: residency,
-                chipName: chipName, outputURL: spec.outputURL, scratch: workDirectory,
+                machine: machine, outputURL: spec.outputURL, scratch: workDirectory,
                 resume: true, progress: progress
             )
             return JobOutcome(
@@ -57,7 +57,7 @@ public struct SeedVR2JobExecutor: JobExecutor {
             }
             let result = try await SeedVR2Engine.upscale(
                 image: image, plan: plan, components: components, residency: residency,
-                chipName: chipName, progress: progress
+                machine: machine, progress: progress
             )
             guard let destination = CGImageDestinationCreateWithURL(
                 spec.outputURL as CFURL, UTType.png.identifier as CFString, 1, nil

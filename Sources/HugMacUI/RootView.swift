@@ -4,15 +4,17 @@ import SwiftUI
 public struct RootView: View {
     let app: AppModel
     private let initialFile: URL?
-    @State private var selection: Section? = .upscale
+    @State private var selection: Section?
 
-    enum Section: Hashable { case upscale, jobs }
+    enum Section: Hashable { case machine, upscale, jobs }
 
     /// `initialFile` pre-loads the Upscale screen — used by debug runs, and later by
     /// "Open With".
     public init(app: AppModel, initialFile: URL? = nil) {
         self.app = app
         self.initialFile = initialFile
+        // First launch opens on This Mac, where the first-run measurement shows its work.
+        _selection = State(initialValue: initialFile == nil && app.machine.needsMeasuring ? .machine : .upscale)
     }
 
     public var body: some View {
@@ -21,6 +23,10 @@ public struct RootView: View {
                 SwiftUI.Section("Tasks") {
                     Label("Upscale", systemImage: "arrow.up.left.and.arrow.down.right")
                         .tag(Section.upscale)
+                }
+                SwiftUI.Section("Mac") {
+                    Label("This Mac", systemImage: "cpu")
+                        .tag(Section.machine)
                 }
                 SwiftUI.Section("Activity") {
                     Label("Jobs", systemImage: "list.bullet.rectangle")
@@ -32,13 +38,17 @@ public struct RootView: View {
         } detail: {
             switch selection {
             case .jobs: JobsView(queue: app.queue)
+            case .machine: MachineView(model: app.machine)
             default: UpscaleView(model: app.upscale)
             }
         }
         .task {
             if let initialFile { await app.upscale.load(initialFile) }
             #if DEBUG
+            if !DebugAutoRun.isRequested { app.machine.measureIfNeeded() }
             await DebugAutoRun.runIfRequested(app)
+            #else
+            app.machine.measureIfNeeded()
             #endif
         }
     }
@@ -50,6 +60,12 @@ public struct RootView: View {
 /// interrupted or paused job instead. Exercises the real engine inside the app bundle.
 @MainActor
 enum DebugAutoRun {
+    /// Headless runs measure the engine, not the Mac — they skip the first-run probes.
+    static var isRequested: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["HUGMAC_AUTOSTART"] == "1" || environment["HUGMAC_RESUME_JOBS"] == "1"
+    }
+
     static func runIfRequested(_ app: AppModel) async {
         let environment = ProcessInfo.processInfo.environment
         let resultURL = environment["HUGMAC_RESULT"].map { URL(fileURLWithPath: $0) }

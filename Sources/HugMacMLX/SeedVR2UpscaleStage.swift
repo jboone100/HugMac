@@ -17,7 +17,7 @@ public struct SeedVR2UpscaleStage: PipelineStage {
     let plan: SeedVR2Plan
     let components: SeedVR2Components
     let residency: SeedVR2Residency
-    let chipName: String
+    let machine: MachineKey
     let outputDirectory: URL
     let scratchDirectory: URL
 
@@ -25,14 +25,14 @@ public struct SeedVR2UpscaleStage: PipelineStage {
         plan: SeedVR2Plan,
         components: SeedVR2Components,
         residency: SeedVR2Residency,
-        chipName: String,
+        machine: MachineKey,
         outputDirectory: URL,
         scratchDirectory: URL
     ) {
         self.plan = plan
         self.components = components
         self.residency = residency
-        self.chipName = chipName
+        self.machine = machine
         self.outputDirectory = outputDirectory
         self.scratchDirectory = scratchDirectory
         let kind: MediaKind = plan.isSingleImage ? .image : .video
@@ -59,7 +59,7 @@ public struct SeedVR2UpscaleStage: PipelineStage {
             }
             let result = try await SeedVR2Engine.upscale(
                 image: image.cgImage, plan: plan, components: components,
-                residency: residency, chipName: chipName, progress: progress
+                residency: residency, machine: machine, progress: progress
             )
             onMeasured?(result.measurements)
             return .image(ImageMedia(cgImage: result.image))
@@ -76,7 +76,7 @@ public struct SeedVR2UpscaleStage: PipelineStage {
         )
         let result = try await SeedVR2Engine.upscale(
             video: video, plan: plan, components: components, residency: residency,
-            chipName: chipName, outputURL: output, scratch: scratchDirectory, progress: progress
+            machine: machine, outputURL: output, scratch: scratchDirectory, progress: progress
         )
         onMeasured?(result.measurements)
         return .video(result.video)

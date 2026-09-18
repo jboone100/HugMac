@@ -47,7 +47,7 @@ public enum SeedVR2Engine {
         plan: SeedVR2Plan,
         components: SeedVR2Components,
         residency: SeedVR2Residency,
-        chipName: String,
+        machine: MachineKey,
         progress: @Sendable @escaping (StageProgress) -> Void = { _ in }
     ) async throws -> ImageResult {
         try components.verify()
@@ -72,7 +72,7 @@ public enum SeedVR2Engine {
         await residency.evict(.vae)
         samples.append(sample(
             "vae-encode", plan: plan, seconds: Date().timeIntervalSince(encodeStart),
-            units: workUnits(for: "vae-encode", plan: plan), chipName: chipName
+            units: workUnits(for: "vae-encode", plan: plan), machine: machine
         ))
 
         progress(StageProgress(fraction: 0.35, phase: "dit", unitsDone: 0, unitsTotal: 1))
@@ -84,7 +84,7 @@ public enum SeedVR2Engine {
         await residency.evict(.transformer)
         samples.append(sample(
             "dit", plan: plan, seconds: Date().timeIntervalSince(ditStart),
-            units: workUnits(for: "dit", plan: plan), chipName: chipName
+            units: workUnits(for: "dit", plan: plan), machine: machine
         ))
 
         progress(StageProgress(fraction: 0.6, phase: "vae-decode", unitsDone: 0, unitsTotal: 1))
@@ -98,7 +98,7 @@ public enum SeedVR2Engine {
         await residency.evict(.vae)
         samples.append(sample(
             "vae-decode", plan: plan, seconds: Date().timeIntervalSince(decodeStart),
-            units: workUnits(for: "vae-decode", plan: plan), chipName: chipName
+            units: workUnits(for: "vae-decode", plan: plan), machine: machine
         ))
 
         let warmup = SeedVR2Geometry.causalWarmupFrames(chunkLength: 1)
@@ -130,7 +130,7 @@ public enum SeedVR2Engine {
         plan: SeedVR2Plan,
         components: SeedVR2Components,
         residency: SeedVR2Residency,
-        chipName: String,
+        machine: MachineKey,
         outputURL: URL,
         scratch: URL,
         resume: Bool = true,
@@ -152,6 +152,7 @@ public enum SeedVR2Engine {
         beginPhase()
         let encodeStart = Date()
         var latentURLs: [URL] = []
+        var encodedHere = 0
         try await withVAEAsync(components: components) { vae in
             for (index, chunk) in chunks.enumerated() {
                 let url = scratch.appendingPathComponent("latent-\(index).safetensors")
@@ -180,6 +181,7 @@ public enum SeedVR2Engine {
                 let latent = try encode(prepared, vae: vae, tiling: plan.encodeTiling, plan: plan)
                 eval(latent)
                 try MLX.save(arrays: ["latent": latent], url: url)
+                encodedHere += 1
                 progress(StageProgress(
                     fraction: encodeSpan * Double(index + 1) / Double(chunks.count),
                     phase: "vae-encode", unitsDone: index + 1, unitsTotal: chunks.count,
@@ -189,15 +191,22 @@ public enum SeedVR2Engine {
             }
         }
         await residency.evict(.vae)
-        samples.append(sample(
-            "vae-encode", plan: plan, seconds: Date().timeIntervalSince(encodeStart),
-            units: workUnits(for: "vae-encode", plan: plan), chipName: chipName
-        ))
+        // A phase is recorded only if it ran in full. A resumed phase skips the chunks it
+        // already has, but its work units count them all — recording it would make this Mac
+        // look several times faster than it is.
+        var jobPeak = SeedVR2Residency.peakMemoryBytes()
+        if encodedHere == chunks.count {
+            samples.append(sample(
+                "vae-encode", plan: plan, seconds: Date().timeIntervalSince(encodeStart),
+                units: workUnits(for: "vae-encode", plan: plan), machine: machine
+            ))
+        }
 
         // ── Phase 2: denoise every chunk ───────────────────────────────────────────────
         beginPhase()
         let ditStart = Date()
         var denoisedURLs: [URL] = []
+        var denoisedHere = 0
         try await withTransformerAsync(components: components) { transformer, textEmbedding in
             for (index, _) in chunks.enumerated() {
                 let url = scratch.appendingPathComponent("denoised-\(index).safetensors")
@@ -224,6 +233,7 @@ public enum SeedVR2Engine {
                 )
                 eval(denoised)
                 try MLX.save(arrays: ["latent": denoised], url: url)
+                denoisedHere += 1
                 progress(StageProgress(
                     fraction: encodeSpan + ditSpan * Double(index + 1) / Double(chunks.count),
                     phase: "dit", unitsDone: index + 1, unitsTotal: chunks.count, checkpoint: url
@@ -232,10 +242,13 @@ public enum SeedVR2Engine {
             }
         }
         await residency.evict(.transformer)
-        samples.append(sample(
-            "dit", plan: plan, seconds: Date().timeIntervalSince(ditStart),
-            units: workUnits(for: "dit", plan: plan), chipName: chipName
-        ))
+        jobPeak = max(jobPeak, SeedVR2Residency.peakMemoryBytes())
+        if denoisedHere == chunks.count {
+            samples.append(sample(
+                "dit", plan: plan, seconds: Date().timeIntervalSince(ditStart),
+                units: workUnits(for: "dit", plan: plan), machine: machine
+            ))
+        }
 
         // ── Phase 3: decode, blend seams, write ────────────────────────────────────────
         //
@@ -249,6 +262,7 @@ public enum SeedVR2Engine {
         var segments: [URL] = []
         // Frames held back to cross-fade with the next chunk's leading frames.
         var pendingTail: [MLXArray] = []
+        var decodedHere = 0
 
         try await withVAEAsync(components: components) { vae in
             for (index, chunk) in chunks.enumerated() {
@@ -338,6 +352,7 @@ public enum SeedVR2Engine {
                 }
                 FileManager.default.createFile(atPath: done.path, contents: nil)
                 segments.append(segment)
+                decodedHere += 1
 
                 progress(StageProgress(
                     fraction: encodeSpan + ditSpan + decodeSpan * Double(index + 1) / Double(chunks.count),
@@ -348,10 +363,13 @@ public enum SeedVR2Engine {
             }
         }
         await residency.evict(.vae)
-        samples.append(sample(
-            "vae-decode", plan: plan, seconds: Date().timeIntervalSince(decodeStart),
-            units: workUnits(for: "vae-decode", plan: plan), chipName: chipName
-        ))
+        jobPeak = max(jobPeak, SeedVR2Residency.peakMemoryBytes())
+        if decodedHere == chunks.count {
+            samples.append(sample(
+                "vae-decode", plan: plan, seconds: Date().timeIntervalSince(decodeStart),
+                units: workUnits(for: "vae-decode", plan: plan), machine: machine
+            ))
+        }
 
         let videoOnly = scratch.appendingPathComponent("video-only.mp4")
         try await VideoIO.concatenate(segments, to: videoOnly)
@@ -366,7 +384,7 @@ public enum SeedVR2Engine {
             try FileManager.default.moveItem(at: videoOnly, to: outputURL)
         }
 
-        let peak = samples.map(\.peakBytes).max() ?? 0
+        let peak = jobPeak
         await residency.evictAll()
         progress(StageProgress(fraction: 1.0, phase: "done",
                                unitsDone: chunks.count, unitsTotal: chunks.count))
@@ -646,7 +664,7 @@ public enum SeedVR2Engine {
     /// (see `beginPhase`), so this reads that phase's own high-water mark rather than the
     /// running maximum for the whole job.
     static func sample(
-        _ phase: String, plan: SeedVR2Plan, seconds: Double, units: Double, chipName: String
+        _ phase: String, plan: SeedVR2Plan, seconds: Double, units: Double, machine: MachineKey
     ) -> CalibrationSample {
         let estimate = plan.phases.first { $0.phase == phase }
         return CalibrationSample(
@@ -656,7 +674,7 @@ public enum SeedVR2Engine {
             seconds: seconds,
             peakBytes: SeedVR2Residency.peakMemoryBytes(),
             weightBytes: estimate?.weightBytes ?? 0,
-            chipName: chipName,
+            machine: machine,
             note: "\(plan.variant.rawValue), \(plan.chunks.count) chunk(s) of up to \(plan.chunks.map(\.length).max() ?? 0) frames"
         )
     }

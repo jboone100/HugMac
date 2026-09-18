@@ -91,6 +91,14 @@ struct Benchmark {
             try await Compare.diff(arguments: Array(raw.dropFirst()))
             return
         }
+        if raw.first == "--probe" {
+            try await ProbeCommand.run(arguments: Array(raw.dropFirst()))
+            return
+        }
+        if raw.first == "--profile" {
+            ProbeCommand.profile()
+            return
+        }
         if raw.first == "--extract" {
             try await Extract.run(arguments: Array(raw.dropFirst()))
             return
@@ -176,7 +184,7 @@ struct Benchmark {
         let lastPhase = Mutex("")
         let result = try await SeedVR2Engine.upscale(
             video: probed, plan: plan, components: components, residency: residency,
-            chipName: hardware.chipName, outputURL: output, scratch: scratch, resume: false
+            machine: hardware.machineKey, outputURL: output, scratch: scratch, resume: false
         ) { progress in
             let elapsed = Date().timeIntervalSince(started)
             let changed = lastPhase.exchange(progress.phase) != progress.phase
