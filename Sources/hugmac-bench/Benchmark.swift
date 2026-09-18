@@ -23,15 +23,11 @@ struct Arguments {
         guard let first = raw.first, !first.hasPrefix("--") else {
             throw Failure("usage: hugmac-bench <video> [--frames N] [--short-side 768] [--quality fast|balanced|best] [--model DIR]")
         }
-        let support = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let home = support.appendingPathComponent("HugMac", isDirectory: true)
+        let store = ModelStore()
         var arguments = Arguments(
             input: URL(fileURLWithPath: first),
-            modelDirectory: home
-                .appendingPathComponent("models/mlx-community--SeedVR2-3B-mlx-int8", isDirectory: true),
-            outputDirectory: home.appendingPathComponent("outputs", isDirectory: true)
+            modelDirectory: store.directory(forRepo: SeedVR2Variant.threeBInt8.hfRepo),
+            outputDirectory: store.outputsDirectory
         )
         raw.removeFirst()
         while let flag = raw.first {
@@ -83,6 +79,10 @@ struct Benchmark {
 
     static func run() async throws {
         let raw = Array(CommandLine.arguments.dropFirst())
+        if raw.first == "--install" {
+            try await InstallCommand.run(arguments: Array(raw.dropFirst()))
+            return
+        }
         if raw.first == "--extract" {
             try await Extract.run(arguments: Array(raw.dropFirst()))
             return

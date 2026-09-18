@@ -4,12 +4,14 @@ Browse, grade, install and run MLX models on Apple Silicon. See `Design/HugMac-p
 
 ## Current state
 
-First increment: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–2).
+Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), and **the model
+installer**, ported from MLXUI's `InstallManager`.
 
 | Target | What's in it | Status |
 |---|---|---|
-| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore` | **builds; 22 tests pass** |
-| `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | **written, not yet compiled** — see below |
+| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, **the model installer** | builds; 68 tests pass |
+| `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
+| `hugmac-bench` | the acceptance benchmark, `--install`, `--extract` | builds |
 
 ## Building
 
@@ -31,6 +33,32 @@ Install it once, then `swift build` covers both targets:
 ```bash
 xcodebuild -downloadComponent MetalToolchain
 ```
+
+## Installing models
+
+```bash
+swift run hugmac-bench --install mlx-community/SeedVR2-3B-mlx-int8
+```
+
+Installs into `~/Library/Application Support/HugMac` (`models/`, `downloads/`, `installed.json`).
+Running it again on a cancelled install **resumes**; on files already in place it **verifies and
+adopts** them instead of downloading. Ported from MLXUI's `InstallManager`, with the parts that
+didn't hold up at multi-gigabyte sizes changed:
+
+| MLXUI | HugMac |
+|---|---|
+| temp → staging → models copies; needs 2× disk | streamed into staging, renamed into place; ~1× |
+| a failed download restarts from zero | partials survive; resume with `Range`, verified across HF's CDN redirect |
+| size checked to ±1 KB, skipped when unknown | SHA-256 (LFS) or git blob SHA-1 on every file |
+| files from `resolve/main` | every file from one pinned commit |
+| safetensors never inspected | headers validated; a manifest's required tensors checked at install |
+| one fixed library location (`static let shared`) | `ModelStore` built from a `StorageRoot` |
+
+The Hugging Face token lives in the Keychain under `com.hugmac` — separate from MLXUI's.
+
+`HUGMAC_NETWORK_TESTS=1 swift test --filter NetworkInstallTests` runs the real-network test:
+it cancels a 335 MB download partway, resumes it, and checks it resumed rather than restarted
+(~350 MB, cleaned up afterwards).
 
 ## Design notes that the code depends on
 

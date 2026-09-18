@@ -1,6 +1,5 @@
 import Foundation
 import HugMacCore
-import MLX
 
 /// An installed SeedVR2 checkpoint on disk, verified before anything loads.
 ///
@@ -25,20 +24,11 @@ public struct SeedVR2Components: Sendable {
         configURL = FileManager.default.fileExists(atPath: config.path) ? config : nil
     }
 
-    /// Tensors that must exist for each component to be loadable at all.
-    /// Names read from the published checkpoint's safetensors header, not guessed: the VAE's
-    /// convolutions are stored flat (`encoder.conv_in.weight`), without the `.conv.` segment
-    /// the Swift module nesting might suggest.
-    static let requiredVAETensors = [
-        "encoder.conv_in.weight",
-        "decoder.conv_out.weight",
-    ]
-    static let requiredTransformerTensors = [
-        "vid_in.proj.weight",
-        "vid_out.proj.weight",
-    ]
-
-    /// Throws `StageError.componentIncomplete` naming what is missing.
+    /// Throws `StageError.componentIncomplete` naming what is missing or damaged.
+    ///
+    /// Reads safetensors *headers* only — structure and tensor names — using the same check
+    /// the installer runs. The earlier version called `MLX.loadArrays` on each file, which for
+    /// the transformer meant mapping 4.2 GB just to read a list of names.
     public func verify() throws {
         let fileManager = FileManager.default
         for url in [transformerURL, vaeURL, positionEmbeddingURL] {
@@ -49,37 +39,16 @@ public struct SeedVR2Components: Sendable {
                 )
             }
         }
-        try Self.verifyTensors(in: vaeURL, expecting: Self.requiredVAETensors, label: "VAE")
-        try Self.verifyTensors(
-            in: transformerURL, expecting: Self.requiredTransformerTensors, label: "transformer"
-        )
-    }
-
-    static func verifyTensors(in url: URL, expecting: [String], label: String) throws {
-        let arrays: [String: MLXArray]
-        do {
-            arrays = try MLX.loadArrays(url: url)
-        } catch {
-            throw StageError.componentIncomplete(
-                model: url.deletingLastPathComponent().lastPathComponent,
-                detail: "\(url.lastPathComponent) could not be read (\(error.localizedDescription))"
-            )
-        }
-        guard !arrays.isEmpty else {
-            throw StageError.componentIncomplete(
-                model: url.deletingLastPathComponent().lastPathComponent,
-                detail: "\(url.lastPathComponent) contains no tensors"
-            )
-        }
-        // Prefixes rather than exact keys: a quantized checkpoint appends `.scales`/`.biases`
-        // and some conversions nest differently, but the stem is stable.
-        for tensor in expecting {
-            let stem = tensor.replacingOccurrences(of: ".weight", with: "")
-            let found = arrays.keys.contains { $0 == tensor || $0.hasPrefix(stem) }
-            guard found else {
+        for url in [transformerURL, vaeURL, positionEmbeddingURL] {
+            do {
+                let header = try SafetensorsHeader.read(url)
+                if let required = SeedVR2Variant.manifest.requiredTensors[url.lastPathComponent] {
+                    try header.require(required)
+                }
+            } catch {
                 throw StageError.componentIncomplete(
-                    model: url.deletingLastPathComponent().lastPathComponent,
-                    detail: "the \(label) in \(url.lastPathComponent) has no '\(tensor)'"
+                    model: directory.lastPathComponent,
+                    detail: "\(url.lastPathComponent): \(error)"
                 )
             }
         }

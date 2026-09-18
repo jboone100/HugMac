@@ -52,6 +52,16 @@ public enum SeedVR2Variant: String, Sendable, Codable, CaseIterable {
     public static let byQualityDescending: [SeedVR2Variant] =
         [.sevenBFP16, .sevenBInt8, .threeBFP16, .threeBInt8]
 
+    /// Exactly the four files the engine loads, and the tensors that prove each weight file
+    /// is the right one. Names read from the published checkpoint's safetensors header.
+    public static let manifest = ComponentManifest(
+        include: ["config.json", "pos_emb.safetensors", "transformer.safetensors", "vae.safetensors"],
+        requiredTensors: [
+            "vae.safetensors": ["encoder.conv_in.weight", "decoder.conv_out.weight"],
+            "transformer.safetensors": ["vid_in.proj.weight", "vid_out.proj.weight"],
+        ]
+    )
+
     public var hfRepo: String {
         switch self {
         case .threeBFP16: "mlx-community/SeedVR2-3B-mlx"
