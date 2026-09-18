@@ -142,7 +142,7 @@ public enum SeedVR2Geometry {
 /// `length` is always 4n+1. Where the tail of a clip doesn't divide evenly, the last chunk
 /// repeats its final real frame (`padTail`) rather than shortening below an aligned count;
 /// the padding is discarded on the way out.
-public struct FrameChunk: Sendable, Equatable {
+public struct FrameChunk: Sendable, Equatable, Codable {
     /// Index of this chunk's first frame in the source.
     public let start: Int
     /// Frames fed to the model, always 4n+1.
@@ -174,7 +174,7 @@ public struct FrameChunk: Sendable, Equatable {
 /// The owner's ComfyUI run tiled at 512 px with 128 px overlap, which cut a 1344×768 frame
 /// into 8 heavily overlapping tiles — 2× the pixel work of one pass — on the two phases that
 /// accounted for 97% of the run time, on a machine with 17+ GB free.
-public struct VAETiling: Sendable, Equatable {
+public struct VAETiling: Sendable, Equatable, Codable {
     public let tileSize: Int
     public let overlap: Int
 
@@ -198,7 +198,7 @@ public struct VAETiling: Sendable, Equatable {
 
 // MARK: - Phase estimate
 
-public struct PhaseEstimate: Sendable, Equatable {
+public struct PhaseEstimate: Sendable, Equatable, Codable {
     public let phase: String
     public let peakBytes: Int64
     public let workUnits: Double
@@ -236,7 +236,7 @@ public struct PhaseEstimate: Sendable, Equatable {
 
 /// Everything the engine needs to run, and everything the preflight card needs to show —
 /// derived from the machine, the input and the user's two choices.
-public struct SeedVR2Plan: Sendable, Equatable {
+public struct SeedVR2Plan: Sendable, Equatable, Codable {
     public let variant: SeedVR2Variant
     /// Output size the user asked for.
     public let outputWidth: Int
@@ -632,11 +632,18 @@ public struct SeedVR2Resolver: Sendable {
         func phase(
             _ name: String, peakUnits: Double, workUnits: Double, weights: Int64
         ) -> PhaseEstimate {
-            let measured = calibration.bytesPerPeakUnit(
-                engineID: engineID, phase: name, chipName: chipName
+            let fallback = fallbackBytesPerPeakUnit(name) * peakUnits
+            let measured = calibration.predictedActivation(
+                engineID: engineID, phase: name, chipName: chipName, peakUnits: peakUnits
             )
-            let perUnit = measured ?? fallbackBytesPerPeakUnit(name)
-            let peak = weights + Int64(perUnit * peakUnits)
+            let activation: Double
+            if let measured {
+                // Beyond anything measured, never predict below the built-in coefficients.
+                activation = measured.extrapolatedAbove ? max(measured.bytes, fallback) : measured.bytes
+            } else {
+                activation = fallback
+            }
+            let peak = weights + Int64(activation)
             return PhaseEstimate(
                 phase: name,
                 peakBytes: peak,

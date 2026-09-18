@@ -62,8 +62,12 @@ public enum SeedVR2Engine {
         progress(StageProgress(fraction: 0.05, phase: "vae-encode", unitsDone: 0, unitsTotal: 1))
         beginPhase()
         let encodeStart = Date()
+        // `eval` inside each phase: MLX is lazy, and without it the encode ran inside the
+        // transformer phase — both models resident at once, and every phase mis-measured.
         let latent = try withVAE(components: components) { vae in
-            try encode(prepared, vae: vae, tiling: plan.encodeTiling, plan: plan)
+            let encoded = try encode(prepared, vae: vae, tiling: plan.encodeTiling, plan: plan)
+            eval(encoded)
+            return encoded
         }
         await residency.evict(.vae)
         samples.append(sample(
@@ -87,7 +91,9 @@ public enum SeedVR2Engine {
         beginPhase()
         let decodeStart = Date()
         let pixels = try withVAE(components: components) { vae in
-            try decode(denoised, vae: vae, tiling: plan.decodeTiling, plan: plan)
+            let decoded = try decode(denoised, vae: vae, tiling: plan.decodeTiling, plan: plan)
+            eval(decoded)
+            return decoded
         }
         await residency.evict(.vae)
         samples.append(sample(
@@ -232,19 +238,42 @@ public enum SeedVR2Engine {
         ))
 
         // ── Phase 3: decode, blend seams, write ────────────────────────────────────────
+        //
+        // Each chunk is written to its own segment, and the frames it holds back for the
+        // next chunk's cross-fade are saved beside it. Decode is the longest phase (35 of 55
+        // minutes on the reference clip), so a job stopped part way through resumes at the
+        // chunk it was on rather than decoding everything again. The segments are joined by
+        // passthrough at the end — no re-encode.
         beginPhase()
         let decodeStart = Date()
-        let videoOnly = scratch.appendingPathComponent("video-only.mp4")
-        let writer = try VideoIO.Writer(
-            url: videoOnly,
-            width: plan.outputWidth, height: plan.outputHeight, fps: video.fps
-        )
+        var segments: [URL] = []
         // Frames held back to cross-fade with the next chunk's leading frames.
         var pendingTail: [MLXArray] = []
 
         try await withVAEAsync(components: components) { vae in
             for (index, chunk) in chunks.enumerated() {
+                let segment = scratch.appendingPathComponent("segment-\(index).mp4")
+                let done = scratch.appendingPathComponent("segment-\(index).done")
+                if resume, FileManager.default.fileExists(atPath: done.path) {
+                    segments.append(segment)
+                    pendingTail = []
+                    progress(StageProgress(
+                        fraction: encodeSpan + ditSpan + decodeSpan * Double(index + 1) / Double(chunks.count),
+                        phase: "vae-decode", unitsDone: index + 1, unitsTotal: chunks.count,
+                        checkpoint: segment
+                    ))
+                    continue
+                }
                 try Task.checkCancellation()
+
+                // Resuming after a finished chunk: its held-back frames are on disk.
+                if pendingTail.isEmpty, index > 0, chunk.blendIn > 0 {
+                    let tailURL = scratch.appendingPathComponent("tail-\(index - 1).safetensors")
+                    if let stored = try? MLX.loadArrays(url: tailURL) {
+                        pendingTail = (0 ..< stored.count).compactMap { stored["frame-\($0)"] }
+                    }
+                }
+
                 let stored = try MLX.loadArrays(url: denoisedURLs[index])
                 guard let latent = stored["latent"] else {
                     throw StageError.engineFailure(
@@ -285,32 +314,47 @@ public enum SeedVR2Engine {
                 if holdBack > 0, writeCount < frames.count {
                     pendingTail = Array(frames[writeCount...])
                 }
+
+                let writer = try VideoIO.Writer(
+                    url: segment, width: plan.outputWidth, height: plan.outputHeight, fps: video.fps
+                )
                 for frame in frames.prefix(writeCount) {
                     let image = try SeedVR2Frames.image(from: frame)
                     try writer.append(SeedVR2Frames.crop(
                         image, toWidth: plan.outputWidth, height: plan.outputHeight
                     ))
                 }
+                try await writer.finish()
+
+                // Tail first, marker last: the marker means everything for this chunk is on
+                // disk.
+                if !pendingTail.isEmpty {
+                    var arrays: [String: MLXArray] = [:]
+                    for (offset, frame) in pendingTail.enumerated() { arrays["frame-\(offset)"] = frame }
+                    try MLX.save(
+                        arrays: arrays,
+                        url: scratch.appendingPathComponent("tail-\(index).safetensors")
+                    )
+                }
+                FileManager.default.createFile(atPath: done.path, contents: nil)
+                segments.append(segment)
+
                 progress(StageProgress(
                     fraction: encodeSpan + ditSpan + decodeSpan * Double(index + 1) / Double(chunks.count),
-                    phase: "vae-decode", unitsDone: index + 1, unitsTotal: chunks.count
+                    phase: "vae-decode", unitsDone: index + 1, unitsTotal: chunks.count,
+                    checkpoint: segment
                 ))
                 await Task.yield()
             }
         }
-        // Anything still held back is the end of the clip.
-        for frame in pendingTail {
-            let image = try SeedVR2Frames.image(from: frame)
-            try writer.append(SeedVR2Frames.crop(
-                image, toWidth: plan.outputWidth, height: plan.outputHeight
-            ))
-        }
-        try await writer.finish()
         await residency.evict(.vae)
         samples.append(sample(
             "vae-decode", plan: plan, seconds: Date().timeIntervalSince(decodeStart),
             units: workUnits(for: "vae-decode", plan: plan), chipName: chipName
         ))
+
+        let videoOnly = scratch.appendingPathComponent("video-only.mp4")
+        try await VideoIO.concatenate(segments, to: videoOnly)
 
         // The audio track is never re-encoded — it is remuxed untouched.
         if video.hasAudio {

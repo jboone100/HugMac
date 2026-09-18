@@ -83,6 +83,14 @@ struct Benchmark {
             try await InstallCommand.run(arguments: Array(raw.dropFirst()))
             return
         }
+        if raw.first == "--trim" {
+            try await Compare.trim(arguments: Array(raw.dropFirst()))
+            return
+        }
+        if raw.first == "--diff" {
+            try await Compare.diff(arguments: Array(raw.dropFirst()))
+            return
+        }
         if raw.first == "--extract" {
             try await Extract.run(arguments: Array(raw.dropFirst()))
             return

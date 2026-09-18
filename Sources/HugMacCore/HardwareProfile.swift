@@ -34,6 +34,13 @@ public struct HardwareProfile: Sendable, Equatable {
         let tier = Self.tier(from: brand)
         let generation = Self.generation(from: brand)
         let total = Int64(ProcessInfo.processInfo.physicalMemory)
+        var available = Self.availableMemory(total: total)
+        #if DEBUG
+        // Pin free memory so two test runs plan identically, however busy the Mac is.
+        if let gb = ProcessInfo.processInfo.environment["HUGMAC_AVAILABLE_GB"].flatMap(Double.init) {
+            available = Int64(gb * 1_073_741_824)
+        }
+        #endif
 
         return HardwareProfile(
             chipName: brand,
@@ -42,7 +49,7 @@ public struct HardwareProfile: Sendable, Equatable {
             gpuCoreCount: Self.gpuCoreCount(),
             memoryBandwidthGBps: Self.bandwidth(generation: generation, tier: tier),
             totalMemoryBytes: total,
-            availableMemoryBytes: Self.availableMemory(total: total),
+            availableMemoryBytes: available,
             gpuWiredLimitBytes: Self.wiredLimit(total: total),
             macOSVersion: ProcessInfo.processInfo.operatingSystemVersion
         )

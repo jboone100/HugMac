@@ -64,7 +64,7 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
 
 /// A time estimate that is honest about where it came from. An unmeasured engine says so
 /// rather than inventing a number.
-public enum TimeEstimate: Sendable, Equatable {
+public enum TimeEstimate: Sendable, Equatable, Codable {
     case unknown
     case measured(seconds: Double)
     case extrapolated(seconds: Double, fromChip: String)
@@ -112,6 +112,48 @@ public struct CalibrationStore: Sendable {
         // The maximum, not the mean: under-predicting peak means a job that swaps or dies,
         // while over-predicting only costs a little tiling.
         return values.max()
+    }
+
+    /// Predicted activation bytes (peak less weights) for a piece of work of `peakUnits`,
+    /// from measurements of this engine's phase on this chip.
+    ///
+    /// Interpolated between measured sizes rather than scaled from one per-unit rate: the
+    /// transformer has a large fixed cost, so its cost *per token* differs by chunk size, and a
+    /// single global rate let one small measurement dictate every large plan.
+    ///
+    /// - Between two measured sizes: linear interpolation of the measured activations.
+    /// - Smaller than anything measured: the smallest measurement — an upper bound, since cost
+    ///   grows with size.
+    /// - Larger than anything measured: the largest measurement's per-unit rate, flagged, so
+    ///   the caller can refuse to predict below its own coefficients.
+    public func predictedActivation(
+        engineID: String, phase: String, chipName: String, peakUnits: Double
+    ) -> (bytes: Double, extrapolatedAbove: Bool)? {
+        var bySize: [Double: Double] = [:]
+        for sample in samples where sample.engineID == engineID && sample.phase == phase
+            && sample.chipName == chipName && sample.peakUnits > 0 {
+            let activation = Double(sample.peakBytes - sample.weightBytes)
+            guard activation > 0 else { continue }
+            bySize[sample.peakUnits] = max(bySize[sample.peakUnits] ?? 0, activation)
+        }
+        let points = bySize.sorted { $0.key < $1.key }
+        guard !points.isEmpty, peakUnits > 0 else { return nil }
+        if let exact = points.first(where: { abs($0.key - peakUnits) / peakUnits < 0.05 }) {
+            return (exact.value, false)
+        }
+        let below = points.last { $0.key < peakUnits }
+        let above = points.first { $0.key > peakUnits }
+        switch (below, above) {
+        case let (low?, high?):
+            let t = (peakUnits - low.key) / (high.key - low.key)
+            return (low.value + t * (high.value - low.value), false)
+        case let (nil, high?):
+            return (high.value, false)
+        case let (low?, nil):
+            return (low.value / low.key * peakUnits, true)
+        case (nil, nil):
+            return nil
+        }
     }
 
     public func estimate(

@@ -21,7 +21,7 @@ public enum SettingProvenance: String, Sendable, Codable {
 
 /// A resolved setting with the reason it holds that value, so Advanced can explain itself
 /// instead of presenting bare numbers.
-public struct SettingReason: Sendable, Equatable {
+public struct SettingReason: Sendable, Equatable, Codable {
     public let setting: String
     public let value: String
     public let provenance: SettingProvenance
@@ -51,7 +51,7 @@ public enum QualityPreset: String, Sendable, Codable, CaseIterable {
 }
 
 /// What the user asked for, in their terms.
-public enum UpscaleTarget: Sendable, Equatable {
+public enum UpscaleTarget: Sendable, Equatable, Codable {
     /// Multiply both dimensions.
     case scale(Int)
     /// Set the short side, preserving aspect ratio — what the ComfyUI node's `resolution`

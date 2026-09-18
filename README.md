@@ -9,9 +9,10 @@ installer**, ported from MLXUI's `InstallManager`.
 
 | Target | What's in it | Status |
 |---|---|---|
-| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, **the model installer** | builds; 68 tests pass |
+| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 80 tests pass |
 | `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
-| `HugMacUI` | the **Upscale** screen (video or image) and its model | builds; 11 tests pass |
+| `HugMacCore/Jobs` | the **job queue**: persistent, serial, resumable, keep-awake, heat-aware | 12 tests |
+| `HugMacUI` | the **Upscale** and **Jobs** screens and their models | 13 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `hugmac-bench` | the acceptance benchmark, `--install`, `--extract` | builds |
 
@@ -55,6 +56,23 @@ the next plan.
 Debug builds accept `HUGMAC_OPEN=<file>` to pre-load a file, and `HUGMAC_AUTOSTART=1
 HUGMAC_RESULT=<path>` to run it and write a result line — the real engine, inside the app
 bundle, without anyone clicking.
+
+## Jobs
+
+An upscale is a **job** on an app-wide queue (plan §5.9), so it outlives the window that
+started it.
+
+- **Serial** — one job at a time; each was planned against the whole machine. A job queued
+  behind another is planned when it *starts*, against the memory free then.
+- **Persistent** — every job is `jobs/<id>/job.json`. A job running when the app died comes
+  back *interrupted*; one running at quit comes back *paused*.
+- **Resumable** — Pause keeps the job's checkpoints; Resume skips everything already done.
+  Every phase checkpoints per chunk — encode and transformer as latents, decode as a video
+  segment plus the frames held back for the next cross-fade — and the segments are joined
+  without re-encoding. A crash mid-decode resumes at the chunk it was on.
+- **Awake, and heat-aware** — the Mac is held awake while a job runs; a *critical* thermal
+  state pauses the job and cooling to *fair* resumes it.
+- **Notifies** when a job finishes or fails, and feeds its measurements into the next plan.
 
 ## Installing models
 

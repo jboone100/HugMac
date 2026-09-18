@@ -498,3 +498,57 @@ struct TilingPreferenceTests {
         #expect(gb > 10 && gb < 14)
     }
 }
+
+// MARK: - Size-aware calibration
+
+@Suite("Calibration by size")
+struct CalibrationBySizeTests {
+
+    static func sample(_ units: Double, activationGB: Double, phase: String = "dit") -> CalibrationSample {
+        CalibrationSample(
+            engineID: SeedVR2Resolver.mlxEngineID, phase: phase, workUnits: units, peakUnits: units,
+            seconds: 1, peakBytes: Int64((activationGB + 4) * 1_073_741_824),
+            weightBytes: Int64(4 * 1_073_741_824), chipName: "Apple M2 Max"
+        )
+    }
+
+    func predict(_ store: CalibrationStore, _ units: Double) -> (bytes: Double, extrapolatedAbove: Bool)? {
+        store.predictedActivation(engineID: SeedVR2Resolver.mlxEngineID, phase: "dit",
+                                  chipName: "Apple M2 Max", peakUnits: units)
+    }
+
+    @Test("Between measured sizes, activations interpolate")
+    func interpolates() throws {
+        // The measured transformer: 8,064 tokens → 5.3 GB, 12,096 tokens → 9.6 GB.
+        let store = CalibrationStore(samples: [Self.sample(8064, activationGB: 5.3),
+                                               Self.sample(12096, activationGB: 9.6)])
+        let mid = try #require(predict(store, 10080))
+        #expect(abs(mid.bytes / 1_073_741_824 - 7.45) < 0.01)
+        #expect(!mid.extrapolatedAbove)
+    }
+
+    @Test("A small workload's high per-unit cost doesn't inflate a large plan")
+    func smallSampleDoesNotDominate() throws {
+        // What went wrong: one 4,032-token sample at a high per-token rate, applied as a
+        // global maximum, made 8,064-token plans look ~50% heavier than measured.
+        let store = CalibrationStore(samples: [Self.sample(4032, activationGB: 5.2),
+                                               Self.sample(8064, activationGB: 5.3)])
+        let large = try #require(predict(store, 8064))
+        #expect(abs(large.bytes / 1_073_741_824 - 5.3) < 0.01)
+    }
+
+    @Test("Below anything measured, the smallest measurement is the bound")
+    func belowRangeIsConservative() throws {
+        let store = CalibrationStore(samples: [Self.sample(8064, activationGB: 5.3)])
+        let small = try #require(predict(store, 2000))
+        #expect(abs(small.bytes / 1_073_741_824 - 5.3) < 0.01)
+    }
+
+    @Test("Above anything measured, the prediction is flagged and scales up")
+    func aboveRangeIsFlagged() throws {
+        let store = CalibrationStore(samples: [Self.sample(8064, activationGB: 5.3)])
+        let large = try #require(predict(store, 16128))
+        #expect(large.extrapolatedAbove)
+        #expect(abs(large.bytes / 1_073_741_824 - 10.6) < 0.01)
+    }
+}

@@ -287,3 +287,39 @@ public enum VideoIO {
         try await export.export(to: output, as: .mp4)
     }
 }
+
+// MARK: - Joining segments
+
+public extension VideoIO {
+    /// Join video files end to end without re-encoding.
+    ///
+    /// The upscaler writes each chunk's frames to its own segment so a job interrupted
+    /// during decode — the longest phase — resumes at the chunk it was on instead of
+    /// decoding everything again. The segments are then joined here, by passthrough.
+    static func concatenate(_ segments: [URL], to output: URL) async throws {
+        guard !segments.isEmpty else { throw IOError.muxFailed("no segments to join") }
+        let composition = AVMutableComposition()
+        guard let track = composition.addMutableTrack(
+            withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else { throw IOError.muxFailed("couldn't create a video track") }
+
+        var cursor = CMTime.zero
+        for segment in segments {
+            let asset = AVURLAsset(url: segment)
+            guard let source = try await asset.loadTracks(withMediaType: .video).first else {
+                throw IOError.noVideoTrack(segment)
+            }
+            let duration = try await asset.load(.duration)
+            try track.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: source, at: cursor)
+            cursor = cursor + duration
+        }
+
+        guard let export = AVAssetExportSession(
+            asset: composition, presetName: AVAssetExportPresetPassthrough
+        ) else { throw IOError.muxFailed("couldn't start a passthrough export") }
+        if FileManager.default.fileExists(atPath: output.path) {
+            try? FileManager.default.removeItem(at: output)
+        }
+        try await export.export(to: output, as: .mp4)
+    }
+}

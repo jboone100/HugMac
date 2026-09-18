@@ -8,39 +8,32 @@ import UniformTypeIdentifiers
 
 // MARK: - Fixtures
 
-final class FakeRunner: UpscaleRunner, @unchecked Sendable {
-    enum Behaviour { case succeed, fail, waitForCancel }
+final class FakeExecutor: JobExecutor, @unchecked Sendable {
+    enum Behaviour { case succeed, slow, fail, waitForCancel }
     let behaviour: Behaviour
     init(_ behaviour: Behaviour = .succeed) { self.behaviour = behaviour }
 
-    func upscaleVideo(_ video: VideoMedia, plan: SeedVR2Plan, output: URL, scratch: URL,
-                      progress: @Sendable @escaping (StageProgress) -> Void) async throws -> UpscaleOutcome {
-        try await work(plan: plan, output: output, progress: progress)
-    }
-
-    func upscaleImage(at url: URL, plan: SeedVR2Plan, output: URL,
-                      progress: @Sendable @escaping (StageProgress) -> Void) async throws -> UpscaleOutcome {
-        try await work(plan: plan, output: output, progress: progress)
-    }
-
-    private func work(plan: SeedVR2Plan, output: URL,
-                      progress: @Sendable @escaping (StageProgress) -> Void) async throws -> UpscaleOutcome {
-        progress(StageProgress(fraction: 0.5, phase: "vae-decode", unitsDone: 1, unitsTotal: plan.chunks.count))
+    func run(_ job: Job, workDirectory: URL,
+             progress: @Sendable @escaping (StageProgress) -> Void) async throws -> JobOutcome {
+        guard case .upscale(let spec) = job.kind else { throw StageError.cancelled }
+        progress(StageProgress(fraction: 0.5, phase: "vae-decode", unitsDone: 1, unitsTotal: 3))
         switch behaviour {
         case .fail:
             throw StageError.engineFailure(stage: "SeedVR2", detail: "simulated")
         case .waitForCancel:
             while true { try await Task.sleep(for: .milliseconds(20)) }
-        case .succeed:
-            try Data("out".utf8).write(to: output)
-            let samples = plan.phases.map {
-                CalibrationSample(engineID: SeedVR2Resolver.mlxEngineID, phase: $0.phase,
-                                  workUnits: $0.workUnits, peakUnits: $0.peakUnits, seconds: 10,
-                                  peakBytes: $0.peakBytes, weightBytes: $0.weightBytes,
+        case .slow, .succeed:
+            if behaviour == .slow { try await Task.sleep(for: .milliseconds(300)) }
+            try Data("out".utf8).write(to: spec.outputURL)
+            // Time only (no peak units): the fake measures how long phases take, and leaves
+            // the memory model on its real coefficients. Fake memory figures would make
+            // every later plan refuse — which is exactly what hid a vacuous test before.
+            let samples = ["vae-encode", "dit", "vae-decode"].map { phase in
+                CalibrationSample(engineID: SeedVR2Resolver.mlxEngineID, phase: phase,
+                                  workUnits: 1_000_000, seconds: 10, peakBytes: 5_000_000_000,
                                   chipName: "Apple M2 Max")
             }
-            return UpscaleOutcome(outputURL: output, samples: samples,
-                                  peakBytes: plan.peakBytes, seconds: 30)
+            return JobOutcome(outputURL: spec.outputURL, seconds: 30, peakBytes: 5_000_000_000, samples: samples)
         }
     }
 }
@@ -107,19 +100,23 @@ struct Workspace {
     }
 
     @MainActor
-    func model(runner: UpscaleRunner = FakeRunner(), availableGB: Double = 19,
-               installer: ModelInstaller? = nil) -> UpscaleModel {
-        UpscaleModel(
+    func model(executor: JobExecutor = FakeExecutor(), availableGB: Double = 19) -> UpscaleModel {
+        let queue = JobQueue(store: store, executor: executor, activity: NoActivity(),
+                             calibrationURL: calibrationURL)
+        return UpscaleModel(
             store: store,
-            installer: installer ?? ModelInstaller(store: store, hub: FakeHubStub(), availableBytes: { 1 << 40 }),
-            runner: runner,
-            calibration: CalibrationStore(),
-            calibrationURL: calibrationURL,
+            installer: ModelInstaller(store: store, hub: FakeHubStub(), availableBytes: { 1 << 40 }),
+            queue: queue,
             detectHardware: { m2Max(availableGB: availableGB) }
         )
     }
 
     func cleanUp() { try? FileManager.default.removeItem(at: root) }
+}
+
+struct NoActivity: ActivityHolding {
+    func begin(reason: String) -> NSObjectProtocol { NSObject() }
+    func end(_ token: NSObjectProtocol) {}
 }
 
 /// The screen never downloads in these tests; a hub that refuses keeps it honest.
@@ -230,18 +227,19 @@ struct UpscaleModelTests {
         #expect(FileManager.default.fileExists(atPath: outcome.outputURL.path))
         #expect(outcome.outputURL.path.hasPrefix(workspace.store.outputsDirectory.path))
         #expect(FileManager.default.fileExists(atPath: workspace.calibrationURL.path))
-        #expect(model.plan?.totalTime != .unknown, "the next plan is predicted from this run")
+        let next = try #require(model.plan, "the screen still has a plan after the run")
+        #expect(next.totalTime.seconds != nil, "the next plan is predicted from this run")
     }
 
     @Test("Cancel stops the run and says so")
     func cancels() async throws {
         let workspace = Workspace(); defer { workspace.cleanUp() }
         workspace.markInstalled()
-        let model = workspace.model(runner: FakeRunner(.waitForCancel))
+        let model = workspace.model(executor: FakeExecutor(.waitForCancel))
         await model.refreshModelState()
         await model.load(try await workspace.makeVideo())
         model.start()
-        await waitUntil { model.run?.phase == "Decoding" }
+        await waitUntil { model.currentJob?.progress.phase == "vae-decode" }
         model.cancel()
         await waitUntil { !model.isRunning }
         #expect(model.errorMessage == "Cancelled.")
@@ -252,7 +250,7 @@ struct UpscaleModelTests {
     func surfacesFailure() async throws {
         let workspace = Workspace(); defer { workspace.cleanUp() }
         workspace.markInstalled()
-        let model = workspace.model(runner: FakeRunner(.fail))
+        let model = workspace.model(executor: FakeExecutor(.fail))
         await model.refreshModelState()
         await model.load(try await workspace.makeVideo())
         model.start()
@@ -276,21 +274,18 @@ struct UpscaleModelTests {
         #expect(second.lastPathComponent == "clip-192x128 2.mp4")
     }
 
-    @Test("Time remaining comes from the plan early on, then from the observed rate")
+    @Test("Time remaining uses this Mac's measurements scaled by what's left")
     func remainingTime() async throws {
         let workspace = Workspace(); defer { workspace.cleanUp() }
         workspace.markInstalled()
-        let model = workspace.model(runner: FakeRunner(.waitForCancel))
+        // First run records measurements; the second run's plan is predicted from them.
+        let model = workspace.model()
         await model.refreshModelState()
         await model.load(try await workspace.makeVideo())
-        model.start()
-        await waitUntil { model.run?.fraction == 0.5 }
-        let run = try #require(model.run)
-        // Halfway after 60 s → about 60 s left.
-        let remaining = try #require(model.remainingSeconds(now: run.startedAt.addingTimeInterval(60)))
-        #expect(abs(remaining - 60) < 1)
-        model.cancel()
-        await waitUntil { !model.isRunning }
+        model.start(); await waitUntil { !model.isRunning }
+        let plan = try #require(model.plan)
+        #expect(plan.totalTime.seconds != nil, "calibrated by the first run")
+        #expect(model.remainingSeconds() == nil, "nothing running")
     }
 
     @Test("Output size estimate scales the source file by pixel count")
@@ -303,4 +298,46 @@ struct UpscaleModelTests {
         #expect(model.estimatedOutputBytes == source * 4)
         #expect((model.estimatedScratchBytes ?? 0) > 0)
     }
+
+    @Test("Starting while another job runs queues it behind, and both finish")
+    func queuesBehind() async throws {
+        let workspace = Workspace(); defer { workspace.cleanUp() }
+        workspace.markInstalled()
+        let model = workspace.model(executor: FakeExecutor(.slow))
+        await model.refreshModelState()
+        await model.load(try await workspace.makeVideo())
+        model.start()
+        let first = try #require(model.currentJobID)
+        #expect(!model.canStart, "this screen's own job is still in flight")
+
+        // A second file while the first is still running: it queues behind.
+        await model.load(try workspace.makeImage())
+        #expect(model.willQueue)
+        #expect(model.canStart)
+        model.start()
+        let second = try #require(model.currentJobID)
+        #expect(model.queue.job(second)?.state == .queued)
+
+        await waitUntil { model.queue.job(second)?.state == .completed }
+        #expect(model.queue.job(first)?.state == .completed)
+        #expect(model.queue.job(second)?.state == .completed)
+    }
+
+    @Test("Pause and resume from the screen go through the queue")
+    func pauseFromScreen() async throws {
+        let workspace = Workspace(); defer { workspace.cleanUp() }
+        workspace.markInstalled()
+        let model = workspace.model(executor: FakeExecutor(.waitForCancel))
+        await model.refreshModelState()
+        await model.load(try await workspace.makeVideo())
+        model.start()
+        await waitUntil { model.currentJob?.state == .running }
+        model.pause()
+        await waitUntil { model.currentJob?.state == .paused }
+        #expect(model.currentJob?.state == .paused)
+        #expect(model.errorMessage == nil, "a pause is not an error")
+        model.cancel()
+        await waitUntil { model.currentJob?.state == .cancelled }
+    }
 }
+

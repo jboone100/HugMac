@@ -167,19 +167,27 @@ public struct UpscaleView: View {
     // MARK: - Run
 
     @ViewBuilder private var runSection: some View {
-        if let run = model.run {
+        if let job = model.currentJob, job.state == .queued || job.state == .running || job.state == .paused || job.state == .interrupted {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 VStack(alignment: .leading, spacing: 8) {
-                    ProgressView(value: run.fraction)
+                    ProgressView(value: job.progress.fraction)
                     HStack {
-                        Text(runLabel(run)).font(.callout.weight(.medium))
+                        Text(runLabel(job)).font(.callout.weight(.medium))
                         Spacer()
-                        Text(timing(run, now: context.date))
+                        Text(timing(job, now: context.date))
                             .font(.callout).monospacedDigit().foregroundStyle(.secondary)
-                        Button("Cancel", role: .cancel) { model.cancel() }
+                        switch job.state {
+                        case .running:
+                            Button("Pause") { model.pause() }
+                            Button("Cancel", role: .cancel) { model.cancel() }
+                        case .queued:
+                            Button("Cancel", role: .cancel) { model.cancel() }
+                        default:
+                            Button("Resume") { model.resume() }
+                            Button("Cancel", role: .cancel) { model.cancel() }
+                        }
                     }
-                    Text("The Mac is kept awake while this runs.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(footnote(job)).font(.caption).foregroundStyle(.secondary)
                 }
             }
         } else {
@@ -187,7 +195,8 @@ public struct UpscaleView: View {
                 Button {
                     model.start()
                 } label: {
-                    Label("Upscale", systemImage: "arrow.up.left.and.arrow.down.right")
+                    Label(model.willQueue ? "Add to queue" : "Upscale",
+                          systemImage: "arrow.up.left.and.arrow.down.right")
                         .frame(minWidth: 120)
                 }
                 .buttonStyle(.borderedProminent)
@@ -196,6 +205,9 @@ public struct UpscaleView: View {
                 .disabled(!model.canStart)
                 if let blocked = startBlockedReason {
                     Text(blocked).font(.callout).foregroundStyle(.secondary)
+                } else if model.willQueue {
+                    Text("Another job is running; this one starts when it finishes, planned for the memory free then.")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
@@ -207,17 +219,37 @@ public struct UpscaleView: View {
         return nil
     }
 
-    private func runLabel(_ run: UpscaleModel.RunState) -> String {
-        guard run.unitsTotal > 1 else { return run.phase }
-        return "\(run.phase) · chunk \(min(run.unitsDone + 1, run.unitsTotal)) of \(run.unitsTotal)"
+    private func runLabel(_ job: Job) -> String {
+        switch job.state {
+        case .queued: return "Waiting for the job ahead of it"
+        case .paused: return "Paused" + (job.note.map { " — \($0)" } ?? "")
+        case .interrupted: return "Interrupted — resumes from its last checkpoint"
+        default: break
+        }
+        let phase = UpscaleModel.phaseLabel(job.progress.phase)
+        guard job.progress.unitsTotal > 1 else { return phase }
+        let chunk = min(job.progress.unitsDone + 1, job.progress.unitsTotal)
+        return "\(phase) · chunk \(chunk) of \(job.progress.unitsTotal)"
     }
 
-    private func timing(_ run: UpscaleModel.RunState, now: Date) -> String {
-        let elapsed = now.timeIntervalSince(run.startedAt)
+    private func timing(_ job: Job, now: Date) -> String {
+        let elapsed = model.queue.elapsedSeconds(for: job.id, now: now)
+        guard job.state == .running else { return elapsed > 0 ? "\(Format.clock(elapsed)) so far" : "" }
         if let remaining = model.remainingSeconds(now: now) {
             return "\(Format.clock(elapsed)) elapsed · about \(Format.duration(remaining)) left"
         }
         return "\(Format.clock(elapsed)) elapsed"
+    }
+
+    private func footnote(_ job: Job) -> String {
+        switch job.state {
+        case .running:
+            return "Runs in the background — closing this window doesn't stop it. The Mac is kept awake while it runs."
+        case .paused, .interrupted:
+            return "Work done so far is kept; resuming skips it."
+        default:
+            return "Progress also shows under Jobs."
+        }
     }
 }
 
@@ -472,7 +504,7 @@ struct ProvenanceBadge: View {
 // MARK: - Result
 
 struct ResultPanel: View {
-    let outcome: UpscaleOutcome
+    let outcome: JobOutcome
     let plan: SeedVR2Plan?
     let isVideo: Bool
 
@@ -503,7 +535,7 @@ struct ResultPanel: View {
 
     @ViewBuilder private var preview: some View {
         if isVideo {
-            VideoPlayer(player: AVPlayer(url: outcome.outputURL))
+            PlayerView(url: outcome.outputURL)
         } else if let image = NSImage(contentsOf: outcome.outputURL) {
             Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
         }
@@ -515,5 +547,31 @@ struct ResultPanel: View {
             parts[1] += " (predicted \(Format.bytes(predicted)))"
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// AppKit's `AVPlayerView`, wrapped for SwiftUI.
+///
+/// Not SwiftUI's `VideoPlayer`: built with the macOS 27 SDK and run on macOS 26, it aborted
+/// the app the first time it was shown (a fatal error setting up its type metadata inside
+/// AVKit's SwiftUI overlay). `AVPlayerView` is long-standing AppKit API with no such bridge.
+struct PlayerView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.player = AVPlayer(url: url)
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if (view.player?.currentItem?.asset as? AVURLAsset)?.url != url {
+            view.player = AVPlayer(url: url)
+        }
+    }
+
+    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+        view.player?.pause()
     }
 }

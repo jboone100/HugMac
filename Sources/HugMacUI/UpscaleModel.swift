@@ -8,8 +8,9 @@ import UniformTypeIdentifiers
 /// The Upscale screen's state and actions (plan §5.11).
 ///
 /// The screen asks for three things — a file, an output size, a quality — and derives
-/// everything else. The owner's ComfyUI graph for the same job had 31 settings across
-/// three nodes plus plumbing; `plan.reasons` is where those settings went.
+/// everything else. It *previews* a plan; the job it starts is planned again at the moment it
+/// actually runs (see `UpscaleJobSpec`), and runs on the app's `JobQueue`, so it outlives
+/// this screen and its window.
 @MainActor
 @Observable
 public final class UpscaleModel {
@@ -41,6 +42,12 @@ public final class UpscaleModel {
         public var isVideo: Bool {
             if case .video = self { return true }
             return false
+        }
+        var jobSource: UpscaleJobSpec.Source {
+            switch self {
+            case .video(let video): .video(video)
+            case .image(let url, let width, let height): .image(url: url, width: width, height: height)
+            }
         }
     }
 
@@ -87,14 +94,6 @@ public final class UpscaleModel {
         case failed(String)
     }
 
-    public struct RunState: Equatable {
-        public var phase: String
-        public var unitsDone: Int
-        public var unitsTotal: Int
-        public var fraction: Double
-        public var startedAt: Date
-    }
-
     // MARK: - Observable state
 
     public private(set) var input: Input?
@@ -103,13 +102,14 @@ public final class UpscaleModel {
     public var outputSize: OutputSize = .double { didSet { replan() } }
     public var quality: QualityPreset = .balanced { didSet { replan() } }
 
+    /// The preview shown on the plan card.
     public private(set) var plan: SeedVR2Plan?
     /// Why no plan: set when the resolver refuses, with its numbers.
     public private(set) var refusal: String?
     public private(set) var modelState: ModelState = .checking
-    public private(set) var run: RunState?
-    public private(set) var outcome: UpscaleOutcome?
-    public private(set) var errorMessage: String?
+    /// The job this screen most recently started.
+    public private(set) var currentJobID: UUID?
+    private var loadError: String?
     public private(set) var hardware: HardwareProfile
 
     /// The checkpoint the screen installs and plans against. int8 3B is the one measured on
@@ -118,46 +118,52 @@ public final class UpscaleModel {
 
     // MARK: - Dependencies
 
+    public let queue: JobQueue
     private let store: ModelStore
     private let installer: ModelInstaller
-    private let runner: UpscaleRunner
-    private var calibration: CalibrationStore
-    private let calibrationURL: URL?
     private let detectHardware: @Sendable () -> HardwareProfile
-    private var runTask: Task<Void, Never>?
-    private var sleepActivity: NSObjectProtocol?
 
     public init(
         store: ModelStore,
         installer: ModelInstaller,
-        runner: UpscaleRunner,
-        calibration: CalibrationStore,
-        calibrationURL: URL? = CalibrationStore.defaultURL(),
+        queue: JobQueue,
         detectHardware: @Sendable @escaping () -> HardwareProfile = { HardwareProfile.detect() }
     ) {
         self.store = store
         self.installer = installer
-        self.runner = runner
-        self.calibration = calibration
-        self.calibrationURL = calibrationURL
+        self.queue = queue
         self.detectHardware = detectHardware
         self.hardware = detectHardware()
+        // A finished job has just recorded measurements; the preview should use them now,
+        // not the next time a setting changes.
+        queue.onFinished { [weak self] _ in self?.replan() }
     }
 
-    /// The production wiring: the default library, the real installer and engine, and this
-    /// Mac's saved measurements.
-    public static func live() -> UpscaleModel {
-        let store = ModelStore()
-        let hardware = HardwareProfile.detect()
-        return UpscaleModel(
-            store: store,
-            installer: ModelInstaller(store: store),
-            runner: SeedVR2Runner(store: store, chipName: hardware.chipName),
-            calibration: CalibrationStore.load()
-        )
+    // MARK: - Derived from the job
+
+    public var currentJob: Job? { currentJobID.flatMap(queue.job) }
+
+    /// Queued or running — this screen's job is in flight.
+    public var isRunning: Bool {
+        guard let state = currentJob?.state else { return false }
+        return state == .queued || state == .running
     }
 
-    // MARK: - Derived
+    public var outcome: JobOutcome? {
+        currentJob?.state == .completed ? currentJob?.outcome : nil
+    }
+
+    public var errorMessage: String? {
+        if let loadError { return loadError }
+        switch currentJob?.state {
+        case .failed: return currentJob?.failure ?? "The job failed."
+        case .cancelled: return "Cancelled."
+        default: return nil
+        }
+    }
+
+    /// Another job is running, so starting this one queues it behind.
+    public var willQueue: Bool { queue.running != nil }
 
     public var availableOutputSizes: [OutputSize] {
         guard let input else { return OutputSize.allCases }
@@ -166,10 +172,8 @@ public final class UpscaleModel {
     }
 
     public var canStart: Bool {
-        plan != nil && modelState == .installed && run == nil && input != nil
+        plan != nil && modelState == .installed && input != nil && !isRunning
     }
-
-    public var isRunning: Bool { run != nil }
 
     /// Rough output size: source bytes scaled by the pixel ratio. On the owner's clip this
     /// predicts 4.6 MB against 4.4 MB measured.
@@ -191,16 +195,15 @@ public final class UpscaleModel {
 
     public var freeDiskBytes: Int64 { store.root.availableBytes() }
 
-    /// Seconds remaining: the plan's calibrated prediction until the run has enough progress
-    /// to extrapolate from, then the observed rate.
+    /// Seconds remaining on this screen's job: the queue's observed rate once there is one,
+    /// else the plan's calibrated prediction scaled by what's left.
     public func remainingSeconds(now: Date = Date()) -> Double? {
-        guard let run else { return nil }
-        let elapsed = now.timeIntervalSince(run.startedAt)
-        if run.fraction > 0.05 {
-            return max(elapsed / run.fraction - elapsed, 0)
+        guard let job = currentJob, job.state == .running else { return nil }
+        if queue.running?.id == job.id, let observed = queue.remainingSeconds(now: now) {
+            return observed
         }
         if let total = plan?.totalTime.seconds {
-            return max(total - elapsed, 0)
+            return max(total * (1 - job.progress.fraction), 0)
         }
         return nil
     }
@@ -217,8 +220,7 @@ public final class UpscaleModel {
 
     /// Load a video or image. Anything else is refused with a sentence, not a crash.
     public func load(_ url: URL) async {
-        errorMessage = nil
-        outcome = nil
+        loadError = nil
         isLoadingInput = true
         defer { isLoadingInput = false }
 
@@ -234,13 +236,15 @@ public final class UpscaleModel {
                 input = .image(url: url, width: image.width, height: image.height)
                 thumbnail = image
             } else {
-                errorMessage = "\(url.lastPathComponent) isn't a video or image HugMac can read."
+                loadError = "\(url.lastPathComponent) isn't a video or image HugMac can read."
                 return
             }
         } catch {
-            errorMessage = String(describing: error)
+            loadError = String(describing: error)
             return
         }
+        // A new file starts fresh; the previous job carries on in the queue.
+        currentJobID = nil
         if !availableOutputSizes.contains(outputSize) {
             outputSize = availableOutputSizes.first ?? .double
         }
@@ -248,29 +252,24 @@ public final class UpscaleModel {
     }
 
     public func clearInput() {
-        guard run == nil else { return }
         input = nil
         thumbnail = nil
         plan = nil
         refusal = nil
-        outcome = nil
-        errorMessage = nil
+        loadError = nil
+        currentJobID = nil
     }
 
-    /// Re-resolve the plan. Cheap — the resolver is arithmetic — so it runs on every change,
-    /// and samples available memory afresh each time, since that is what it plans against.
+    /// Re-resolve the preview plan. Cheap — the resolver is arithmetic — so it runs on every
+    /// change, and samples available memory afresh each time.
     public func replan() {
-        guard let input, run == nil else { return }
+        guard let input else { return }
         hardware = detectHardware()
-        let resolver = SeedVR2Resolver(hardware: hardware, calibration: calibration)
-        let source: SeedVR2Resolver.Source = switch input {
-        case .video(let video): .video(video)
-        case .image(_, let width, let height): .image(width: width, height: height)
-        }
+        let resolver = SeedVR2Resolver(hardware: hardware, calibration: queue.calibration)
         do {
             plan = try resolver.plan(
-                source: source, target: outputSize.target, quality: quality,
-                installedVariants: [variant]
+                source: input.jobSource.resolverSource, target: outputSize.target,
+                quality: quality, installedVariants: [variant]
             )
             refusal = nil
         } catch {
@@ -310,86 +309,33 @@ public final class UpscaleModel {
         modelState = .notInstalled
     }
 
+    /// Put an upscale on the queue. It starts now if nothing else is running.
     public func start() {
         guard canStart, let input, let plan else { return }
-        errorMessage = nil
-        outcome = nil
-        run = RunState(phase: "Starting", unitsDone: 0, unitsTotal: plan.chunks.count,
-                       fraction: 0, startedAt: Date())
-        // Hold the Mac awake. The owner's ComfyUI run lost ~2.6 hours to what looks like the
-        // Mac sleeping mid-decode; a job this long has to say it's working.
-        sleepActivity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled],
-            reason: "Upscaling \(input.url.lastPathComponent)"
+        loadError = nil
+        let spec = UpscaleJobSpec(
+            source: input.jobSource, target: outputSize.target, quality: quality,
+            variant: variant, outputURL: outputURL(for: input, plan: plan)
         )
-
-        let runner = self.runner
-        let output = outputURL(for: input, plan: plan)
-        let scratch = store.jobsDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let progress: @Sendable (StageProgress) -> Void = { update in
-            Task { @MainActor [weak self] in self?.apply(update) }
-        }
-
-        runTask = Task { [weak self] in
-            do {
-                // Detached: MLX evaluation blocks its thread, and that thread must not be
-                // the main one.
-                let work = Task.detached(priority: .userInitiated) {
-                    switch input {
-                    case .video(let video):
-                        try await runner.upscaleVideo(video, plan: plan, output: output,
-                                                      scratch: scratch, progress: progress)
-                    case .image(let url, _, _):
-                        try await runner.upscaleImage(at: url, plan: plan, output: output,
-                                                      progress: progress)
-                    }
-                }
-                // A detached task does not inherit cancellation from whoever awaits it, so
-                // Cancel has to be forwarded by hand — without this, Cancel changed nothing
-                // and the upscale ran on.
-                let outcome = try await withTaskCancellationHandler {
-                    try await work.value
-                } onCancel: {
-                    work.cancel()
-                }
-                self?.finish(.success(outcome))
-            } catch {
-                self?.finish(.failure(error))
-            }
-        }
+        let title = "\(input.url.lastPathComponent) → \(plan.outputWidth)×\(plan.outputHeight)"
+        currentJobID = queue.enqueue(title: title, kind: .upscale(spec)).id
     }
 
+    /// Stop at the next checkpoint, keeping the work done so far.
+    public func pause() {
+        if let currentJobID { queue.pause(currentJobID) }
+    }
+
+    public func resume() {
+        if let currentJobID { queue.resume(currentJobID) }
+    }
+
+    /// Stop for good and discard the work done so far.
     public func cancel() {
-        runTask?.cancel()
+        if let currentJobID { queue.cancel(currentJobID) }
     }
 
     // MARK: - Internals
-
-    private func apply(_ update: StageProgress) {
-        guard var current = run else { return }
-        current.phase = Self.phaseLabel(update.phase)
-        current.unitsDone = update.unitsDone
-        current.unitsTotal = max(update.unitsTotal, current.unitsTotal)
-        current.fraction = update.fraction
-        run = current
-    }
-
-    private func finish(_ result: Result<UpscaleOutcome, Error>) {
-        if let sleepActivity { ProcessInfo.processInfo.endActivity(sleepActivity) }
-        sleepActivity = nil
-        runTask = nil
-        run = nil
-        switch result {
-        case .success(let outcome):
-            self.outcome = outcome
-            // Feed what this run measured back into the next plan.
-            calibration.merge(outcome.samples)
-            if let calibrationURL { try? calibration.save(to: calibrationURL) }
-            replan()
-        case .failure(let error):
-            errorMessage = (error is CancellationError) ? "Cancelled." : String(describing: error)
-        }
-    }
 
     static func phaseLabel(_ phase: String) -> String {
         switch phase {
@@ -397,20 +343,25 @@ public final class UpscaleModel {
         case "dit": "Upscaling"
         case "vae-decode": "Decoding"
         case "done": "Finishing"
-        default: phase.isEmpty ? "Working" : phase.capitalized
+        default: phase.isEmpty ? "Starting" : phase.capitalized
         }
     }
 
-    /// `<name>-<w>x<h>.<ext>` in the library's outputs folder, never overwriting a previous
-    /// result.
+    /// `<name>-<w>x<h>.<ext>` in the library's outputs folder, never overwriting an earlier
+    /// result or one a queued job has already claimed.
     func outputURL(for input: Input, plan: SeedVR2Plan) -> URL {
         let stem = input.url.deletingPathExtension().lastPathComponent
             + "-\(plan.outputWidth)x\(plan.outputHeight)"
         let ext = input.isVideo ? "mp4" : "png"
         try? FileManager.default.createDirectory(at: store.outputsDirectory, withIntermediateDirectories: true)
+        let claimed = Set(queue.jobs.compactMap { job -> String? in
+            // Unfinished jobs reserve their name; finished ones already exist on disk.
+            guard case .upscale(let spec) = job.kind, !job.state.isFinished else { return nil }
+            return spec.outputURL.path
+        })
         var candidate = store.outputsDirectory.appendingPathComponent("\(stem).\(ext)")
         var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
+        while FileManager.default.fileExists(atPath: candidate.path) || claimed.contains(candidate.path) {
             candidate = store.outputsDirectory.appendingPathComponent("\(stem) \(counter).\(ext)")
             counter += 1
         }

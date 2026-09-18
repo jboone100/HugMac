@@ -56,7 +56,7 @@ public struct ImageMedia: @unchecked Sendable {
 /// `hasAudio` matters for upscaling: SeedVR2 transforms frames only, so the audio track is
 /// demuxed once and remuxed untouched (the owner's source clips carry AAC audio, and H3
 /// emits stereo audio natively).
-public struct VideoMedia: Sendable, Equatable {
+public struct VideoMedia: Sendable, Equatable, Codable {
     public let url: URL
     public let width: Int
     public let height: Int
