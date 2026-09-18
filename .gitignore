@@ -3,9 +3,9 @@
 DerivedData/
 *.xcuserstate
 **/xcuserdata/
-HugMac.xcodeproj/xcuserdata/
+LocalLab.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
-HugMac.xcodeproj/
+LocalLab.xcodeproj/
 
 # === Planning docs: kept private, as in MLXUI (they record local runs and decisions) ===
 Design/

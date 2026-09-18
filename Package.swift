@@ -3,13 +3,13 @@ import PackageDescription
 import Foundation
 
 // The MLX target needs Xcode's Metal Toolchain component to compile mlx-swift's shaders
-// (`xcodebuild -downloadComponent MetalToolchain`). Set HUGMAC_SKIP_MLX=1 to build and test
+// (`xcodebuild -downloadComponent MetalToolchain`). Set LOCALLAB_SKIP_MLX=1 to build and test
 // the pure-Swift core on a machine that doesn't have it yet.
-let skipMLX = ProcessInfo.processInfo.environment["HUGMAC_SKIP_MLX"] == "1"
+let skipMLX = ProcessInfo.processInfo.environment["LOCALLAB_SKIP_MLX"] == "1"
 
 let mlxProducts: [Product] = skipMLX ? [] : [
-    .library(name: "HugMacMLX", targets: ["HugMacMLX"]),
-    .library(name: "HugMacUI", targets: ["HugMacUI"]),
+    .library(name: "LocalLabMLX", targets: ["LocalLabMLX"]),
+    .library(name: "LocalLabUI", targets: ["LocalLabUI"]),
 ]
 let mlxDependencies: [Package.Dependency] = skipMLX ? [] : [
     // Pinned exactly: mlx-swift has shipped breaking API changes in patch releases.
@@ -23,16 +23,16 @@ let mlxDependencies: [Package.Dependency] = skipMLX ? [] : [
 let mlxTargets: [Target] = skipMLX ? [] : [
     // The benchmark runner: resolves a plan, runs the engine, reports per-phase peak and
     // time against the ComfyUI baseline.
-    .executableTarget(name: "hugmac-bench", dependencies: ["HugMacCore", "HugMacMLX"]),
+    .executableTarget(name: "locallab-bench", dependencies: ["LocalLabCore", "LocalLabMLX"]),
     // The SwiftUI screens and their models. The app target (App/, via project.yml) is a thin
     // shell around this, so the same code runs in the Xcode app and under `swift test`.
-    .target(name: "HugMacUI", dependencies: ["HugMacCore", "HugMacMLX"]),
-    .testTarget(name: "HugMacUITests", dependencies: ["HugMacUI", "HugMacCore"]),
+    .target(name: "LocalLabUI", dependencies: ["LocalLabCore", "LocalLabMLX"]),
+    .testTarget(name: "LocalLabUITests", dependencies: ["LocalLabUI", "LocalLabCore"]),
     // Everything that touches MLX weights and the GPU.
     .target(
-        name: "HugMacMLX",
+        name: "LocalLabMLX",
         dependencies: [
-            "HugMacCore",
+            "LocalLabCore",
             .product(name: "MLX", package: "mlx-swift"),
             .product(name: "MLXNN", package: "mlx-swift"),
             .product(name: "MLXRandom", package: "mlx-swift"),
@@ -45,15 +45,15 @@ let mlxTargets: [Target] = skipMLX ? [] : [
 ]
 
 let package = Package(
-    name: "HugMac",
+    name: "LocalLab",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "HugMacCore", targets: ["HugMacCore"]),
+        .library(name: "LocalLabCore", targets: ["LocalLabCore"]),
     ] + mlxProducts,
     dependencies: mlxDependencies,
     targets: [
         // Pure Swift + Apple frameworks. No MLX, so it builds and tests in seconds.
-        .target(name: "HugMacCore"),
-        .testTarget(name: "HugMacCoreTests", dependencies: ["HugMacCore"]),
+        .target(name: "LocalLabCore"),
+        .testTarget(name: "LocalLabCoreTests", dependencies: ["LocalLabCore"]),
     ] + mlxTargets
 )

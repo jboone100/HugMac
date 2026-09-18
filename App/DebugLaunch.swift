@@ -4,18 +4,18 @@ import SwiftUI
 /// Debug-only launch hooks, so the real window can be checked without Screen Recording
 /// permission or a human at the keyboard:
 ///
-///     HUGMAC_OPEN=clip.mp4            pre-load a file into Upscale
-///     HUGMAC_SNAPSHOT=out.png         render the window to a PNG, then quit
-///     HUGMAC_SNAPSHOT_SIZE=1100x1500  window size for the snapshot
-///     HUGMAC_SNAPSHOT_DELAY=4         seconds to wait for the plan to settle
-///     HUGMAC_EXPAND_REASONS=1         open "Why these settings"
+///     LOCALLAB_OPEN=clip.mp4            pre-load a file into Upscale
+///     LOCALLAB_SNAPSHOT=out.png         render the window to a PNG, then quit
+///     LOCALLAB_SNAPSHOT_SIZE=1100x1500  window size for the snapshot
+///     LOCALLAB_SNAPSHOT_DELAY=4         seconds to wait for the plan to settle
+///     LOCALLAB_EXPAND_REASONS=1         open "Why these settings"
 ///
 /// The app writes its window id to `<snapshot>.windowid` and stays open for
-/// `HUGMAC_SNAPSHOT_HOLD` seconds; `scripts/snapshot.sh` captures it with `screencapture -l`.
+/// `LOCALLAB_SNAPSHOT_HOLD` seconds; `scripts/snapshot.sh` captures it with `screencapture -l`.
 enum DebugLaunch {
     static var initialFile: URL? {
         #if DEBUG
-        ProcessInfo.processInfo.environment["HUGMAC_OPEN"].map { URL(fileURLWithPath: $0) }
+        ProcessInfo.processInfo.environment["LOCALLAB_OPEN"].map { URL(fileURLWithPath: $0) }
         #else
         nil
         #endif
@@ -26,9 +26,9 @@ enum DebugLaunch {
             let view = NSView()
             #if DEBUG
             let environment = ProcessInfo.processInfo.environment
-            if let path = environment["HUGMAC_SNAPSHOT"] {
-                let delay = Double(environment["HUGMAC_SNAPSHOT_DELAY"] ?? "") ?? 4
-                let size = environment["HUGMAC_SNAPSHOT_SIZE"].flatMap(Self.parseSize)
+            if let path = environment["LOCALLAB_SNAPSHOT"] {
+                let delay = Double(environment["LOCALLAB_SNAPSHOT_DELAY"] ?? "") ?? 4
+                let size = environment["LOCALLAB_SNAPSHOT_SIZE"].flatMap(Self.parseSize)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     guard let window = view.window else { return }
                     // An occluded or never-shown window is never rendered, so bring it
@@ -44,7 +44,7 @@ enum DebugLaunch {
                         // capture it (`screencapture -l`), then quit once that's done.
                         let idFile = URL(fileURLWithPath: path).appendingPathExtension("windowid")
                         try? String(window.windowNumber).write(to: idFile, atomically: true, encoding: .utf8)
-                        let hold = Double(environment["HUGMAC_SNAPSHOT_HOLD"] ?? "") ?? 6
+                        let hold = Double(environment["LOCALLAB_SNAPSHOT_HOLD"] ?? "") ?? 6
                         DispatchQueue.main.asyncAfter(deadline: .now() + hold) {
                             NSApp.terminate(nil)
                         }

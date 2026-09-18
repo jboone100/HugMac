@@ -1,37 +1,38 @@
-# Generates HugMac.xcodeproj:  xcodegen generate
+# Generates LocalLab.xcodeproj:  xcodegen generate
 #
-# The app target is a thin shell (App/) around the HugMacUI library in this same package, so
+# The app target is a thin shell (App/) around the LocalLabUI library in this same package, so
 # `swift build`/`swift test` and the Xcode app compile identical code.
 #
 # Not sandboxed yet: the App Store vs Direct edition decision (plan §9.4) is still open. A
 # sandboxed build needs security-scoped bookmarks for the model library, which StorageRoot
 # already supports.
-name: HugMac
+name: LocalLab
 options:
-  bundleIdPrefix: com.hugmac
+  bundleIdPrefix: com.locallab
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
 packages:
-  HugMac:
+  LocalLab:
     path: .
 targets:
-  HugMac:
+  LocalLab:
     type: application
     platform: macOS
     sources:
       - path: App
     dependencies:
-      - package: HugMac
-        product: HugMacUI
+      - package: LocalLab
+        product: LocalLabUI
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.hugmac.app
-        PRODUCT_NAME: HugMac
+        PRODUCT_BUNDLE_IDENTIFIER: com.locallab.app
+        PRODUCT_NAME: LocalLab
         MARKETING_VERSION: "0.1"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: HugMac
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleDisplayName: LocalLab
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         SWIFT_VERSION: "6.0"

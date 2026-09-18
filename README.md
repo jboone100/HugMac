@@ -1,6 +1,10 @@
 # LocalLab
 
-Browse, grade, install and run MLX models on Apple Silicon. The design plan lives in `Design/HugMac-plan.md`, which is kept out of this public repository; section references like “plan §5.9” in the code point there.
+Browse, grade, install and run MLX models on Apple Silicon. The design plan lives in `Design/LocalLab-plan.md`, which is kept out of this public repository; section references like “plan §5.9” in the code point there.
+
+Called HugMac until 2026-09-18. On first launch after the rename, the library moves from
+`~/Library/Application Support/HugMac` to `…/LocalLab` (instantly, same volume), leaving a
+link at the old path; a Hugging Face token saved under the old Keychain name is still read.
 
 ## Current state
 
@@ -10,25 +14,25 @@ profile** with its first-run speed tests (plan §5.13–5.14), and **Chat** (pla
 
 | Target | What's in it | Status |
 |---|---|---|
-| `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 138 tests pass |
-| `HugMacCore/Chat` | chat model catalog, `ChatModelPicker` (Automatic), conversations, the markdown block parser | 21 tests |
-| `HugMacCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
-| `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
-| `HugMacCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `HugMacUI` | the **Chat**, **This Mac**, **Upscale** (single or batch) and **Jobs** screens and their models | 25 tests |
+| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 138 tests pass |
+| `LocalLabCore/Chat` | chat model catalog, `ChatModelPicker` (Smart Fit), conversations, the markdown block parser | 21 tests |
+| `LocalLabCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
+| `LocalLabMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
+| `LocalLabCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
+| `LocalLabUI` | the **Chat**, **This Mac**, **Upscale** (single or batch) and **Jobs** screens and their models | 25 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
-| `HugMacMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
-| `HugMacMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
-| `hugmac-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile`, `--chat` | builds |
+| `LocalLabMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
+| `LocalLabMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
+| `locallab-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile`, `--chat` | builds |
 
 ## Building
 
 ```bash
 swift test                      # everything
-HUGMAC_SKIP_MLX=1 swift test    # core only, no Metal toolchain needed
+LOCALLAB_SKIP_MLX=1 swift test    # core only, no Metal toolchain needed
 ```
 
-`HugMacMLX` cannot compile on this machine yet: Xcode 27 ships the Metal compiler as a
+`LocalLabMLX` cannot compile on this machine yet: Xcode 27 ships the Metal compiler as a
 separate component, and mlx-swift builds its own Metal kernels.
 
 ```
@@ -45,9 +49,9 @@ xcodebuild -downloadComponent MetalToolchain
 ## Running the app
 
 ```bash
-xcodegen generate            # HugMac.xcodeproj is generated, not committed
-xcodebuild -project HugMac.xcodeproj -scheme HugMac -derivedDataPath .build/xcode build
-open .build/xcode/Build/Products/Debug/HugMac.app
+xcodegen generate            # LocalLab.xcodeproj is generated, not committed
+xcodebuild -project LocalLab.xcodeproj -scheme LocalLab -derivedDataPath .build/xcode build
+open .build/xcode/Build/Products/Debug/LocalLab.app
 ```
 
 **Upscale** takes a video or an image, an output size (2× · 1080p · 1440p · 4K, only sizes
@@ -58,8 +62,8 @@ the card says so with the numbers instead of offering Start. A run holds the Mac
 reports chunk-by-chunk progress with time remaining, and feeds its measurements back into
 the next plan.
 
-Debug builds accept `HUGMAC_OPEN=<file>` to pre-load a file, and `HUGMAC_AUTOSTART=1
-HUGMAC_RESULT=<path>` to run it and write a result line — the real engine, inside the app
+Debug builds accept `LOCALLAB_OPEN=<file>` to pre-load a file, and `LOCALLAB_AUTOSTART=1
+LOCALLAB_RESULT=<path>` to run it and write a result line — the real engine, inside the app
 bundle, without anyone clicking.
 
 ## Jobs
@@ -86,7 +90,7 @@ Model downloads aren't in the line — they use the network and disk, not the GP
 
 ## This Mac
 
-HugMac works out what the Mac it's running on can do, every time it opens (plan §5.13). Nothing
+LocalLab works out what the Mac it's running on can do, every time it opens (plan §5.13). Nothing
 in it is a table of Mac models, so a chip released after this build still gets a profile.
 
 - **Three layers, most trusted last** — hardware facts; measurements from reference Macs that
@@ -104,15 +108,16 @@ in it is a table of Mac models, so a chip released after this build still gets a
   never downloaded.
 
 ```bash
-swift run hugmac-bench --profile   # what the This Mac screen says
-swift run hugmac-bench --probe     # run the speed tests and save them
+swift run locallab-bench --profile   # what the This Mac screen says
+swift run locallab-bench --probe     # run the speed tests and save them
 ```
 
 Results live in `probes.json` beside `calibration.json`, and stay on the Mac.
 
 ## Chat
 
-Chat opens ready (plan §5.12). **Automatic** picks the best installed model that runs well on
+Chat opens ready (plan §5.12). **Smart Fit** — LocalLab's name for choosing from the hardware
+profile — picks the best installed model that runs well on
 this Mac: green first (fits with headroom in memory free now, and fast enough to read), then
 the highest quality, then the fastest. Any installed model can be chosen instead; each is
 graded with its arithmetic — weights + context cache + runtime, and tokens a second.
@@ -124,26 +129,26 @@ graded with its arithmetic — weights + context cache + runtime, and tokens a s
 - **Replies render** as markdown, code, tables or JSON, with a per-message *Show as* override
   remembered per model; a reasoning model's thinking is folded, and off unless *Think first*.
 - **Speed is measured** from each reply and feeds the next estimate. Conversations are saved in
-  `~/Library/Application Support/HugMac/conversations/` and never leave the Mac.
+  `~/Library/Application Support/LocalLab/conversations/` and never leave the Mac.
 
 v1 covers the Qwen3.5 family (0.8B to 122B-A10B, Apache-2.0).
 
 ```bash
-swift run hugmac-bench --chat mlx-community/Qwen3.5-9B-4bit "Explain unified memory in two sentences."
+swift run locallab-bench --chat mlx-community/Qwen3.5-9B-4bit "Explain unified memory in two sentences."
 ```
 
 ## Installing models
 
 ```bash
-swift run hugmac-bench --install mlx-community/SeedVR2-3B-mlx-int8
+swift run locallab-bench --install mlx-community/SeedVR2-3B-mlx-int8
 ```
 
-Installs into `~/Library/Application Support/HugMac` (`models/`, `downloads/`, `installed.json`).
+Installs into `~/Library/Application Support/LocalLab` (`models/`, `downloads/`, `installed.json`).
 Running it again on a cancelled install **resumes**; on files already in place it **verifies and
 adopts** them instead of downloading. Ported from MLXUI's `InstallManager`, with the parts that
 didn't hold up at multi-gigabyte sizes changed:
 
-| MLXUI | HugMac |
+| MLXUI | LocalLab |
 |---|---|
 | temp → staging → models copies; needs 2× disk | streamed into staging, renamed into place; ~1× |
 | a failed download restarts from zero | partials survive; resume with `Range`, verified across HF's CDN redirect |
@@ -152,9 +157,9 @@ didn't hold up at multi-gigabyte sizes changed:
 | safetensors never inspected | headers validated; a manifest's required tensors checked at install |
 | one fixed library location (`static let shared`) | `ModelStore` built from a `StorageRoot` |
 
-The Hugging Face token lives in the Keychain under `com.hugmac` — separate from MLXUI's.
+The Hugging Face token lives in the Keychain under `com.locallab` — separate from MLXUI's.
 
-`HUGMAC_NETWORK_TESTS=1 swift test --filter NetworkInstallTests` runs the real-network test:
+`LOCALLAB_NETWORK_TESTS=1 swift test --filter NetworkInstallTests` runs the real-network test:
 it cancels a 335 MB download partway, resumes it, and checks it resumed rather than restarted
 (~350 MB, cleaned up afterwards).
 
@@ -178,7 +183,7 @@ it cancels a 335 MB download partway, resumes it, and checks it resumed rather t
 `Diner_0.mp4` (243 frames, 672×384) → 1344×768 on an M2 Max / 32 GB, int8 3B, every setting
 chosen by the resolver, audio intact.
 
-| | HugMac (MLX) | ComfyUI baseline (PyTorch/MPS) |
+| | LocalLab (MLX) | ComfyUI baseline (PyTorch/MPS) |
 |---|---|---|
 | Total | **55 m 14 s** | 6 h 33 m wall · 3 h 59 m steady-state |
 | VAE encode | 11 m 37 s · 5.09 GB | 1 h 03 m · 1.23 GB |
