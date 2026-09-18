@@ -10,16 +10,17 @@ link at the old path; a Hugging Face token saved under the old Keychain name is 
 
 Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), **the model
 installer**, ported from MLXUI's `InstallManager`, the **job queue**, the **machine
-profile** with its first-run speed tests (plan §5.13–5.14), and **Chat** (plan §5.12).
+profile** with its first-run speed tests (plan §5.13–5.14), **Chat** (plan §5.12), and
+**Settings → Storage** (plan §5.4).
 
 | Target | What's in it | Status |
 |---|---|---|
-| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 138 tests pass |
+| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 152 tests pass |
 | `LocalLabCore/Chat` | chat model catalog, `ChatModelPicker` (Smart Fit), conversations, the markdown block parser | 21 tests |
 | `LocalLabCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `LocalLabMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `LocalLabCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `LocalLabUI` | the **Chat**, **This Mac**, **Upscale** (single or batch) and **Jobs** screens and their models | 25 tests |
+| `LocalLabUI` | the **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 29 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `LocalLabMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
 | `LocalLabMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
@@ -136,6 +137,22 @@ v1 covers the Qwen3.5 family (0.8B to 122B-A10B, Apache-2.0).
 ```bash
 swift run locallab-bench --chat mlx-community/Qwen3.5-9B-4bit "Explain unified memory in two sentences."
 ```
+
+## Storage
+
+**Settings → Storage** (⌘,) shows where the library is, its free space, and what's in it —
+each model's size, outputs, partial downloads, job checkpoints — with Show in Finder and
+Delete (refused while a job or chat needs the model).
+
+- **Change…** a folder, or a drive (the library goes in a `LocalLab` folder on it). A folder
+  that already holds a library is used as is — nothing moves.
+- **Moving is verified.** On the same disk it's an instant rename. To another disk each file is
+  copied, read back from the disk and checked against the original's SHA-256; only when every
+  file matches are the originals deleted. Stop any time — verified files are kept and the move
+  resumes. Saved jobs are rewritten to point at the new place. LocalLab restarts to finish.
+- **A disconnected drive is never an empty library.** LocalLab runs on the library on this
+  Mac, names the missing one in a banner, and goes back to it once it's connected.
+- Measurements, speed tests and conversations stay on this Mac wherever the library goes.
 
 ## Installing models
 

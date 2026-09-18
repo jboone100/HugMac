@@ -16,6 +16,9 @@ struct LocalLabApp: App {
                 .background(DebugLaunch.Snapshotter())
                 .task { delegate.app = app }
         }
+        Settings {
+            SettingsView(app: app)
+        }
     }
 }
 

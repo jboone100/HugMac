@@ -12,7 +12,7 @@ enum ChatCommand {
             throw Failure("usage: locallab-bench --chat <repo> <prompt> [--think]")
         }
         let repo = positional[0], prompt = positional[1]
-        let store = ModelStore()
+        let store = LibraryLocation.resolve().store
         guard store.isInstalled(repo: repo) else {
             throw Failure("\(repo) isn't installed — locallab-bench --install \(repo)")
         }

@@ -11,7 +11,7 @@ import LocalLabMLX
 enum ProbeCommand {
     static func run(arguments: [String]) async throws {
         let hardware = HardwareProfile.detect()
-        let store = ModelStore()
+        let store = LibraryLocation.resolve().store
         print("Probing \(hardware.machineKey.displayName) — library on \(store.baseDirectory.path)")
         let report = try await ProbeSuite.run(hardware: hardware, library: store.baseDirectory) { progress in
             if let running = progress.running {
@@ -42,7 +42,7 @@ enum ProbeCommand {
         let calibration = CalibrationStore.load()
         let profile = MachineProfile.resolve(
             hardware: hardware, calibration: calibration,
-            installedUpscalers: SeedVR2Variant.installed(in: ModelStore())
+            installedUpscalers: SeedVR2Variant.installed(in: LibraryLocation.resolve().store)
         )
         print(hardware.machineKey.displayName)
         print(String(format: "  %.0f GB/s bandwidth · %.1f GB usable by the GPU · %.1f GB free now",

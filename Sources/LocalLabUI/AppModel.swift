@@ -13,12 +13,14 @@ public final class AppModel {
     public let upscale: UpscaleModel
     public let machine: MachineModel
     public let chat: ChatModel
+    public let storage: StorageModel
 
-    public init(queue: JobQueue, upscale: UpscaleModel, machine: MachineModel, chat: ChatModel) {
+    public init(queue: JobQueue, upscale: UpscaleModel, machine: MachineModel, chat: ChatModel, storage: StorageModel) {
         self.queue = queue
         self.upscale = upscale
         self.machine = machine
         self.chat = chat
+        self.storage = storage
     }
 
     /// The production wiring: the default library, the real installer and engine, this
@@ -26,7 +28,10 @@ public final class AppModel {
     public static func live() -> AppModel {
         // Before anything resolves a path: the library may still be under the old name.
         LegacyMigration.moveApplicationSupportIfNeeded()
-        let store = ModelStore()
+        // The library the user chose — or, if its drive isn't connected, the default one,
+        // with the missing one named rather than shown as empty.
+        let library = LibraryLocation.resolve()
+        let store = library.store
         let calibrationURL = CalibrationStore.defaultURL()
         // One engine per kind of job, all sharing one line. Text-to-video has a job type but
         // no engine yet, so it isn't registered — the queue reports that rather than crash.
@@ -45,7 +50,19 @@ public final class AppModel {
         // what the profile says.
         queue.onFinished { _ in machine.refresh() }
         let chat = ChatModel(store: store, installer: installer, queue: queue, backend: MLXChatEngine())
-        return AppModel(queue: queue, upscale: upscale, machine: machine, chat: chat)
+        let storage = StorageModel(
+            resolution: library, installer: installer, queue: queue, chat: chat,
+            busyReason: {
+                if case .installing = upscale.modelState { return "The upscaler is downloading. Let it finish or pause it first." }
+                return nil
+            },
+            libraryChanged: {
+                chat.refresh()
+                machine.refresh()
+                await upscale.refreshModelState()
+            }
+        )
+        return AppModel(queue: queue, upscale: upscale, machine: machine, chat: chat, storage: storage)
     }
 }
 

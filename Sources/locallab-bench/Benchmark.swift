@@ -23,7 +23,7 @@ struct Arguments {
         guard let first = raw.first, !first.hasPrefix("--") else {
             throw Failure("usage: locallab-bench <video> [--frames N] [--short-side 768] [--quality fast|balanced|best] [--model DIR]")
         }
-        let store = ModelStore()
+        let store = LibraryLocation.resolve().store
         var arguments = Arguments(
             input: URL(fileURLWithPath: first),
             modelDirectory: store.directory(forRepo: SeedVR2Variant.threeBInt8.hfRepo),
@@ -169,7 +169,7 @@ struct Benchmark {
         let residency = SeedVR2Residency()
         // Working files go in their own folder under jobs/, never beside results, and a fresh
         // one each run: a benchmark measures a cold run, and stale checkpoints would skip phases.
-        let scratch = ModelStore().jobsDirectory
+        let scratch = LibraryLocation.resolve().store.jobsDirectory
             .appendingPathComponent("bench-\(UUID().uuidString)", isDirectory: true)
 
         // Never overwrite an earlier result, and say in the name when only part of the clip

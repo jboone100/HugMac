@@ -524,8 +524,9 @@ public final class JobQueue {
             .sorted { ($0.sequence, $0.createdAt) < ($1.sequence, $1.createdAt) }
     }
 
-    // ISO-8601 with fractional seconds.
-    static let encoder: JSONEncoder = {
+    // ISO-8601 with fractional seconds. Built per use and nonisolated: the library mover
+    // rewrites job records off the main actor.
+    nonisolated static var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .custom { date, encoder in
@@ -534,9 +535,9 @@ public final class JobQueue {
                 .time(includingFractionalSeconds: true).timeZone(separator: .omitted)))
         }
         return encoder
-    }()
+    }
 
-    static let decoder: JSONDecoder = {
+    nonisolated static var decoder: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let text = try decoder.singleValueContainer().decode(String.self)
@@ -545,5 +546,5 @@ public final class JobQueue {
             return try Date.ISO8601FormatStyle().parse(text)
         }
         return decoder
-    }()
+    }
 }

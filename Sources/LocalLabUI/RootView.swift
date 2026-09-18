@@ -1,3 +1,4 @@
+import LocalLabCore
 import SwiftUI
 
 /// The window: a sidebar of tasks and jobs, and the selection on the right.
@@ -38,11 +39,19 @@ public struct RootView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
-            switch selection {
-            case .jobs: JobsView(queue: app.queue)
-            case .machine: MachineView(model: app.machine)
-            case .chat: ChatView(model: app.chat)
-            default: UpscaleView(model: app.upscale)
+            VStack(spacing: 0) {
+                if let missing = app.storage.unavailable {
+                    HStack(spacing: 8) {
+                        Image(systemName: "externaldrive.badge.exclamationmark")
+                        Text("The library on “\(LibraryLocation.displayName(missing))” isn't connected — using the library on this Mac until it is.")
+                        Spacer()
+                        SettingsLink { Text("Storage…") }
+                    }
+                    .font(.callout)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Color.orange.opacity(0.15))
+                }
+                detail
             }
         }
         .task {
@@ -53,6 +62,15 @@ public struct RootView: View {
             #else
             app.machine.measureIfNeeded()
             #endif
+        }
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch selection {
+        case .jobs: JobsView(queue: app.queue)
+        case .machine: MachineView(model: app.machine)
+        case .chat: ChatView(model: app.chat)
+        default: UpscaleView(model: app.upscale)
         }
     }
 }

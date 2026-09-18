@@ -186,6 +186,44 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+extension Job {
+    /// The same job with every file URL passed through `map` — used when the library moves,
+    /// so saved inputs, outputs and results follow it.
+    public func remappingURLs(_ map: (URL) -> URL) -> Job {
+        var job = self
+        switch kind {
+        case .upscale(let spec):
+            let source: UpscaleJobSpec.Source
+            switch spec.source {
+            case .video(let video):
+                source = .video(VideoMedia(
+                    url: map(video.url), width: video.width, height: video.height, fps: video.fps,
+                    frameCount: video.frameCount, hasAudio: video.hasAudio, hasAlpha: video.hasAlpha
+                ))
+            case .image(let url, let width, let height):
+                source = .image(url: map(url), width: width, height: height)
+            case .outputOf(let id):
+                source = .outputOf(jobID: id)
+            }
+            job.kind = .upscale(UpscaleJobSpec(
+                source: source, target: spec.target, quality: spec.quality,
+                variant: spec.variant, outputURL: map(spec.outputURL)
+            ))
+        case .textToVideo(let spec):
+            job.kind = .textToVideo(TextToVideoJobSpec(
+                model: spec.model, prompt: spec.prompt, startImage: spec.startImage.map(map),
+                seconds: spec.seconds, shortSide: spec.shortSide, seed: spec.seed,
+                outputURL: map(spec.outputURL)
+            ))
+        }
+        if let outcome {
+            job.outcome = JobOutcome(outputURL: map(outcome.outputURL), seconds: outcome.seconds,
+                                     peakBytes: outcome.peakBytes, samples: outcome.samples)
+        }
+        return job
+    }
+}
+
 /// What an executor gets besides the job itself.
 public struct JobContext: Sendable {
     /// Where this job's checkpoints live; anything already here is resumed from.
