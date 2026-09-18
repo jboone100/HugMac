@@ -11,6 +11,8 @@ installer**, ported from MLXUI's `InstallManager`.
 |---|---|---|
 | `HugMacCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, **the model installer** | builds; 68 tests pass |
 | `HugMacMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
+| `HugMacUI` | the **Upscale** screen (video or image) and its model | builds; 11 tests pass |
+| `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `hugmac-bench` | the acceptance benchmark, `--install`, `--extract` | builds |
 
 ## Building
@@ -33,6 +35,26 @@ Install it once, then `swift build` covers both targets:
 ```bash
 xcodebuild -downloadComponent MetalToolchain
 ```
+
+## Running the app
+
+```bash
+xcodegen generate            # HugMac.xcodeproj is generated, not committed
+xcodebuild -project HugMac.xcodeproj -scheme HugMac -derivedDataPath .build/xcode build
+open .build/xcode/Build/Products/Debug/HugMac.app
+```
+
+**Upscale** takes a video or an image, an output size (2× · 1080p · 1440p · 4K, only sizes
+that enlarge the source are offered) and a quality preset. Everything else is derived and
+shown on the *Plan for this Mac* card — per-step peak memory and time, whether each figure is
+measured on this Mac or estimated, disk needed, and *Why these settings*. If nothing fits,
+the card says so with the numbers instead of offering Start. A run holds the Mac awake,
+reports chunk-by-chunk progress with time remaining, and feeds its measurements back into
+the next plan.
+
+Debug builds accept `HUGMAC_OPEN=<file>` to pre-load a file, and `HUGMAC_AUTOSTART=1
+HUGMAC_RESULT=<path>` to run it and write a result line — the real engine, inside the app
+bundle, without anyone clicking.
 
 ## Installing models
 

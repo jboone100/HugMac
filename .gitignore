@@ -3,3 +3,6 @@
 DerivedData/
 *.xcuserstate
 **/xcuserdata/
+HugMac.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+HugMac.xcodeproj/

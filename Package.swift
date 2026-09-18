@@ -7,7 +7,10 @@ import Foundation
 // the pure-Swift core on a machine that doesn't have it yet.
 let skipMLX = ProcessInfo.processInfo.environment["HUGMAC_SKIP_MLX"] == "1"
 
-let mlxProducts: [Product] = skipMLX ? [] : [.library(name: "HugMacMLX", targets: ["HugMacMLX"])]
+let mlxProducts: [Product] = skipMLX ? [] : [
+    .library(name: "HugMacMLX", targets: ["HugMacMLX"]),
+    .library(name: "HugMacUI", targets: ["HugMacUI"]),
+]
 let mlxDependencies: [Package.Dependency] = skipMLX ? [] : [
     // Pinned exactly: mlx-swift has shipped breaking API changes in patch releases.
     .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
@@ -16,6 +19,10 @@ let mlxTargets: [Target] = skipMLX ? [] : [
     // The benchmark runner: resolves a plan, runs the engine, reports per-phase peak and
     // time against the ComfyUI baseline.
     .executableTarget(name: "hugmac-bench", dependencies: ["HugMacCore", "HugMacMLX"]),
+    // The SwiftUI screens and their models. The app target (App/, via project.yml) is a thin
+    // shell around this, so the same code runs in the Xcode app and under `swift test`.
+    .target(name: "HugMacUI", dependencies: ["HugMacCore", "HugMacMLX"]),
+    .testTarget(name: "HugMacUITests", dependencies: ["HugMacUI", "HugMacCore"]),
     // Everything that touches MLX weights and the GPU.
     .target(
         name: "HugMacMLX",
