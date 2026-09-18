@@ -58,6 +58,22 @@ public struct ModelStore: Sendable, Equatable {
         }
     }
 
+    /// `<directory>/<stem>.<ext>`, or `<stem> 2.<ext>`, `<stem> 3.<ext>`… — the first name
+    /// that neither exists nor is `reserved` (claimed by a job that hasn't written it yet).
+    /// The one place output names are chosen, so nothing writes over an earlier result.
+    public static func uniqueOutputURL(
+        in directory: URL, stem: String, extension ext: String, reserved: Set<String> = []
+    ) -> URL {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var candidate = directory.appendingPathComponent("\(stem).\(ext)")
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) || reserved.contains(candidate.path) {
+            candidate = directory.appendingPathComponent("\(stem) \(counter).\(ext)")
+            counter += 1
+        }
+        return candidate
+    }
+
     /// Total bytes under `url`, recursing. An unreadable child is skipped rather than
     /// aborting the count — a partial total beats a blank settings pane.
     public static func directorySize(at url: URL) -> Int64 {

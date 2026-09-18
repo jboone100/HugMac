@@ -105,6 +105,7 @@ struct Benchmark {
         print("  plannable budget \(gb(hardware.plannableMemoryBytes()))")
 
         var probed = try await VideoIO.probe(arguments.input)
+        let fullFrameCount = probed.frameCount
         if let limit = arguments.frames, limit < probed.frameCount {
             probed = VideoMedia(
                 url: probed.url, width: probed.width, height: probed.height, fps: probed.fps,
@@ -153,14 +154,21 @@ struct Benchmark {
         print("\n  components verified in \(arguments.modelDirectory.path)")
 
         let residency = SeedVR2Residency()
-        let scratch = arguments.outputDirectory.appendingPathComponent("scratch", isDirectory: true)
-        try FileManager.default.createDirectory(at: arguments.outputDirectory, withIntermediateDirectories: true)
-        // A benchmark measures a cold run; stale checkpoints would skip phases.
-        try? FileManager.default.removeItem(at: scratch)
+        // Working files go in their own folder under jobs/, never beside results, and a fresh
+        // one each run: a benchmark measures a cold run, and stale checkpoints would skip phases.
+        let scratch = ModelStore().jobsDirectory
+            .appendingPathComponent("bench-\(UUID().uuidString)", isDirectory: true)
 
-        let output = arguments.outputDirectory.appendingPathComponent(
-            arguments.input.deletingPathExtension().lastPathComponent
-                + "-\(plan.outputWidth)x\(plan.outputHeight).mp4"
+        // Never overwrite an earlier result, and say in the name when only part of the clip
+        // was run — a 5-frame smoke test once overwrote the full 243-frame benchmark output
+        // because both were called `Diner_0-1344x768.mp4`.
+        var stem = arguments.input.deletingPathExtension().lastPathComponent
+            + "-\(plan.outputWidth)x\(plan.outputHeight)"
+        if let frames = arguments.frames, frames < fullFrameCount {
+            stem += "-first\(probed.frameCount)f"
+        }
+        let output = ModelStore.uniqueOutputURL(
+            in: arguments.outputDirectory, stem: stem, extension: "mp4"
         )
 
         print("\n── Running ─────────────────────────────────────────────")
@@ -180,6 +188,9 @@ struct Benchmark {
                 ))
             }
         }
+
+        // Succeeded: the checkpoints have done their job.
+        try? FileManager.default.removeItem(at: scratch)
 
         print("\n── Measured ────────────────────────────────────────────")
         for sample in result.measurements.samples {

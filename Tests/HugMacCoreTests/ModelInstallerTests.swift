@@ -420,3 +420,27 @@ struct IntegrityTests {
         ])
     }
 }
+
+// MARK: - Output names
+
+@Suite("Output names")
+struct OutputNameTests {
+
+    @Test("An existing result is never overwritten, and reserved names are skipped")
+    func uniqueNames() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hugmac-names-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = ModelStore.uniqueOutputURL(in: directory, stem: "clip-1344x768", extension: "mp4")
+        #expect(first.lastPathComponent == "clip-1344x768.mp4")
+        try Data("a".utf8).write(to: first)
+
+        let second = ModelStore.uniqueOutputURL(in: directory, stem: "clip-1344x768", extension: "mp4")
+        #expect(second.lastPathComponent == "clip-1344x768 2.mp4")
+
+        let third = ModelStore.uniqueOutputURL(in: directory, stem: "clip-1344x768", extension: "mp4",
+                                               reserved: [second.path])
+        #expect(third.lastPathComponent == "clip-1344x768 3.mp4")
+    }
+}

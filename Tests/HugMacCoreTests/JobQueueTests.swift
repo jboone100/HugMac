@@ -171,16 +171,23 @@ struct JobQueueTests {
         var queue: JobQueue? = JobQueue(store: store, executor: executor)
         let job = try #require(queue?.enqueue(title: "clip", kind: upscaleKind(in: store)))
         await waitFor { (queue?.job(job.id)?.progress.unitsDone ?? 0) >= 3 }
-        // Simulate a crash: the process is gone, job.json still says running.
+        // Simulate a crash: job.json still says running. (Dropping the queue doesn't stop the
+        // old work the way a real crash would, so the relaunch gets its own executor — its
+        // attempts are then only the resumed run's, not interleaved with the abandoned one.)
         queue = nil
 
-        let relaunched = JobQueue(store: store, executor: executor)
+        let afterCrash = FakeExecutor(units: 6, unitDelay: .milliseconds(60))
+        let relaunched = JobQueue(store: store, executor: afterCrash)
         #expect(relaunched.job(job.id)?.state == .interrupted)
         #expect((relaunched.job(job.id)?.progress.unitsDone ?? 0) >= 1, "progress survives the relaunch")
         relaunched.resume(job.id)
         await waitFor { relaunched.job(job.id)?.state == .completed }
         #expect(relaunched.job(job.id)?.state == .completed)
-        #expect((executor.attempts.last?.firstComputedUnit ?? 0) >= 3)
+        let resumed = try #require(afterCrash.attempts.first)
+        // Either it picked up at unit 3 or later, or every unit was already checkpointed —
+        // never from the start.
+        #expect(resumed.firstComputedUnit.map { $0 >= 3 } ?? true,
+                "resumed at \(String(describing: resumed.firstComputedUnit)), expected ≥ 3")
     }
 
     @Test("A failure keeps its work so Resume continues, and the queue moves on")

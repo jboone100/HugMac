@@ -352,19 +352,14 @@ public final class UpscaleModel {
     func outputURL(for input: Input, plan: SeedVR2Plan) -> URL {
         let stem = input.url.deletingPathExtension().lastPathComponent
             + "-\(plan.outputWidth)x\(plan.outputHeight)"
-        let ext = input.isVideo ? "mp4" : "png"
-        try? FileManager.default.createDirectory(at: store.outputsDirectory, withIntermediateDirectories: true)
         let claimed = Set(queue.jobs.compactMap { job -> String? in
             // Unfinished jobs reserve their name; finished ones already exist on disk.
             guard case .upscale(let spec) = job.kind, !job.state.isFinished else { return nil }
             return spec.outputURL.path
         })
-        var candidate = store.outputsDirectory.appendingPathComponent("\(stem).\(ext)")
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) || claimed.contains(candidate.path) {
-            candidate = store.outputsDirectory.appendingPathComponent("\(stem) \(counter).\(ext)")
-            counter += 1
-        }
-        return candidate
+        return ModelStore.uniqueOutputURL(
+            in: store.outputsDirectory, stem: stem,
+            extension: input.isVideo ? "mp4" : "png", reserved: claimed
+        )
     }
 }
