@@ -1,6 +1,6 @@
 # HugMac
 
-Browse, grade, install and run MLX models on Apple Silicon. See `Design/HugMac-plan.md`.
+Browse, grade, install and run MLX models on Apple Silicon. The design plan lives in `Design/HugMac-plan.md`, which is kept out of this public repository; section references like “plan §5.9” in the code point there.
 
 ## Current state
 
