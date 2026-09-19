@@ -92,6 +92,10 @@ struct Benchmark {
             try await Compare.diff(arguments: Array(raw.dropFirst()))
             return
         }
+        if raw.first == "--image" {
+            try await ImageBench.run(arguments: Array(raw.dropFirst()))
+            return
+        }
         if raw.first == "--browse" {
             try await BrowseCommand.run(arguments: Array(raw.dropFirst()))
             return

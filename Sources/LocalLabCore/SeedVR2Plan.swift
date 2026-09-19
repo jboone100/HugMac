@@ -628,9 +628,11 @@ public struct SeedVR2Resolver: Sendable {
         func phase(
             _ name: String, peakUnits: Double, workUnits: Double, weights: Int64
         ) -> PhaseEstimate {
-            let fallback = fallbackBytesPerPeakUnit(name) * peakUnits
+            let singleFrame = chunkLength == 1
+            let fallback = fallbackBytesPerPeakUnit(name, singleFrame: singleFrame) * peakUnits
             let measured = calibration.predictedActivation(
-                engineID: engineID, phase: name, machine: machine, peakUnits: peakUnits
+                engineID: engineID, phase: name, machine: machine, peakUnits: peakUnits,
+                singleFrame: singleFrame
             )
             let activation: Double
             if let measured {
@@ -670,8 +672,21 @@ public struct SeedVR2Resolver: Sendable {
     /// Measured on an M2 Max (32 GB) with the int8 3B checkpoint — see
     /// `LocalLab/Design/LocalLab-plan.md` §6.4. Replaced per-machine by `CalibrationStore` as
     /// soon as a real run completes.
-    static func fallbackBytesPerPeakUnit(_ phase: String) -> Double {
-        switch phase {
+    static func fallbackBytesPerPeakUnit(_ phase: String, singleFrame: Bool = false) -> Double {
+        if singleFrame {
+            switch phase {
+            // Measured, int8 3B, single images, M2 Max (2026-09-18): the transformer used
+            // 508, 476 and 590 KB a patch at 4,032, 8,748 and 16,800 patches — well under a
+            // video chunk's ~860, which is what the one shared figure assumed until then and
+            // why a 2× photo was refused at 18.8 GB (it ran at 13.2). Slightly superlinear, so
+            // the margin is taken over the largest. Encode ~4,640, decode ~8,790 B per pixel.
+            case "vae-encode":   return 5_100
+            case "vae-decode":   return 9_700
+            case "dit":          return 650_000
+            default:             break
+            }
+        }
+        return switch phase {
         // Measured, int8 3B, 1344×768, 9-frame chunks, M2 Max:
         //   encode untiled  3,704 B per pixel-frame  (peaked 32.5 GB — it swapped)
         //   decode 384 px   8,609 B per pixel-frame  (peaked 11.1 GB)

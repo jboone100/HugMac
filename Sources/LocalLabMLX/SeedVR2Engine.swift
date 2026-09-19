@@ -675,6 +675,7 @@ public enum SeedVR2Engine {
             peakBytes: SeedVR2Residency.peakMemoryBytes(),
             weightBytes: estimate?.weightBytes ?? 0,
             machine: machine,
+            chunkFrames: plan.chunks.map(\.length).max(),
             note: "\(plan.variant.rawValue), \(plan.chunks.count) chunk(s) of up to \(plan.chunks.map(\.length).max() ?? 0) frames"
         )
     }

@@ -320,15 +320,30 @@ struct PlanCard: View {
                 modelRow
                 Divider()
                 if let refusal = model.refusal {
+                    let closable = model.shortfall?.moreToFreeGB != nil
                     Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("This won't fit right now").font(.headline)
-                            Text(refusal).font(.callout)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(closable ? "Not enough free memory right now" : "Too large for this Mac")
+                                .font(.headline)
+                            Text(refusal).font(.callout).fixedSize(horizontal: false, vertical: true)
+                            if closable {
+                                Button("Check again") { model.replan() }
+                                    .controlSize(.small)
+                            }
                         }
                     } icon: {
-                        Image(systemName: "xmark.octagon.fill")
+                        Image(systemName: closable ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
                     }
-                    .foregroundStyle(.red)
+                    .foregroundStyle(closable ? .orange : .red)
+                    // Free memory changes as apps close: look again every few seconds, so the
+                    // plan appears by itself once there's room.
+                    .task(id: refusal) {
+                        guard closable else { return }
+                        while !Task.isCancelled {
+                            try? await Task.sleep(for: .seconds(5))
+                            model.replan()
+                        }
+                    }
                 } else if let plan = model.plan {
                     if model.planIsProvisional {
                         Label("Another job is running, so this is planned for the memory free when the Mac is idle. The job is planned for real when it starts.",

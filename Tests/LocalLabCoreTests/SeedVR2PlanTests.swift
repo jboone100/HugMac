@@ -552,3 +552,56 @@ struct CalibrationBySizeTests {
         #expect(abs(large.bytes / 1_073_741_824 - 10.6) < 0.01)
     }
 }
+
+@Suite("Images and video are predicted apart")
+struct ImageVideoMemoryTests {
+    let engine = SeedVR2Resolver.mlxEngineID
+    let machine = MachineKey(chipName: "Apple M2 Max", gpuCores: 30, memoryGB: 32)
+
+    func dit(_ tokens: Double, activation: Double, frames: Int) -> CalibrationSample {
+        CalibrationSample(engineID: engine, phase: "dit", workUnits: tokens, peakUnits: tokens, seconds: 1,
+                          peakBytes: Int64(4.22e9 + activation), weightBytes: 4_220_000_000,
+                          machine: machine, chunkFrames: frames)
+    }
+
+    @Test func anImageUsesImageMeasurementsNotAVideoChunks() {
+        // The M2 Max, 2026-09-18: a video chunk ~707 KB a patch, an image ~476.
+        let store = CalibrationStore(samples: [dit(8_064, activation: 5.70e9, frames: 5), dit(8_748, activation: 4.16e9, frames: 1)])
+        let image = store.predictedActivation(engineID: engine, phase: "dit", machine: machine, peakUnits: 8_748, singleFrame: true)
+        let video = store.predictedActivation(engineID: engine, phase: "dit", machine: machine, peakUnits: 8_064, singleFrame: false)
+        #expect(image?.bytes == 4.16e9)
+        #expect(video?.bytes == 5.70e9)
+    }
+
+    @Test func videoNeverBorrowsAnImagesLowerFigures() {
+        let store = CalibrationStore(samples: [dit(8_748, activation: 4.16e9, frames: 1)])
+        #expect(store.predictedActivation(engineID: engine, phase: "dit", machine: machine, peakUnits: 8_000, singleFrame: false) == nil,
+                "under-predicting a video chunk would swap; it falls back to the built-in figure instead")
+        #expect(store.predictedActivation(engineID: engine, phase: "dit", machine: machine, peakUnits: 8_000, singleFrame: true) != nil)
+    }
+
+    @Test func olderSamplesAreSortedByTheirNote() {
+        let old = CalibrationSample(engineID: engine, phase: "dit", workUnits: 1, seconds: 1, peakBytes: 1, chipName: "Apple M2 Max",
+                                    note: "SeedVR2-3B-int8, 1 chunk(s) of up to 1 frames")
+        #expect(old.frames == 1)
+        #expect(old.isSingleFrame == true)
+        #expect(ReferenceMachine.m2Max30Core32GB.samples.contains { $0.isSingleFrame == false })
+    }
+
+    @Test func aTwoTimesPhotoIsPlannedFromImageFiguresNotVideo() throws {
+        // The owner's photo: 1195×896 → 2390×1792, 16,800 transformer patches, which ran at a
+        // 13.2 GB peak. The shared video figure had said 18.8.
+        let hardware = HardwareProfile(
+            chipName: "Apple M2 Max", generation: 2, tier: .max, gpuCoreCount: 30, memoryBandwidthGBps: 400,
+            totalMemoryBytes: 34_359_738_368, availableMemoryBytes: 28 * 1_073_741_824,
+            gpuWiredLimitBytes: Int64(0.75 * 34_359_738_368),
+            macOSVersion: .init(majorVersion: 26, minorVersion: 6, patchVersion: 2)
+        )
+        let plan = try SeedVR2Resolver(hardware: hardware, calibration: CalibrationStore())
+            .plan(source: .image(width: 1195, height: 896), target: .scale(2), installedVariants: [.threeBInt8])
+        let transformer = try #require(plan.phases.first { $0.phase == "dit" })
+        #expect(transformer.peakUnits == 16_800)
+        #expect(transformer.peakGB > 13.2, "still above what it measured — the margin holds")
+        #expect(transformer.peakGB < 15.5, "but nowhere near the 18.8 GB that refused it")
+    }
+}

@@ -32,6 +32,10 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
     /// Mac with that chip until newer ones supersede them.
     public let gpuCores: Int?
     public let memoryGB: Int?
+    /// Frames in the largest chunk — 1 for a single image. Images and video chunks use
+    /// memory differently per token (measured on the M2 Max: ~480–510 KB per transformer
+    /// patch for an image, ~710–860 KB for a video chunk), so they are predicted apart.
+    public let chunkFrames: Int?
     public let note: String
 
     public init(
@@ -45,6 +49,7 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
         chipName: String,
         gpuCores: Int? = nil,
         memoryGB: Int? = nil,
+        chunkFrames: Int? = nil,
         note: String = ""
     ) {
         self.engineID = engineID
@@ -57,21 +62,32 @@ public struct CalibrationSample: Sendable, Codable, Equatable {
         self.chipName = chipName
         self.gpuCores = gpuCores
         self.memoryGB = memoryGB
+        self.chunkFrames = chunkFrames
         self.note = note
     }
 
     public init(
         engineID: String, phase: String, workUnits: Double, peakUnits: Double = 0,
         seconds: Double, peakBytes: Int64, weightBytes: Int64 = 0,
-        machine: MachineKey, note: String = ""
+        machine: MachineKey, chunkFrames: Int? = nil, note: String = ""
     ) {
         self.init(
             engineID: engineID, phase: phase, workUnits: workUnits, peakUnits: peakUnits,
             seconds: seconds, peakBytes: peakBytes, weightBytes: weightBytes,
             chipName: machine.chipName, gpuCores: machine.gpuCores, memoryGB: machine.memoryGB,
-            note: note
+            chunkFrames: chunkFrames, note: note
         )
     }
+
+    /// Frames per chunk: recorded, or read from the note of samples taken before it was
+    /// ("…, 1 chunk(s) of up to 5 frames").
+    public var frames: Int? {
+        if let chunkFrames { return chunkFrames }
+        guard let range = note.range(of: #"up to (\d+) frames"#, options: .regularExpression) else { return nil }
+        return Int(note[range].split(separator: " ")[2])
+    }
+
+    public var isSingleFrame: Bool? { frames.map { $0 == 1 } }
 
     /// The Mac this was measured on, as far as the sample records it.
     public var machine: MachineKey {
@@ -222,12 +238,22 @@ public struct CalibrationStore: Sendable {
         )
     }
 
+    ///
+    /// `singleFrame` keeps images and video chunks apart. An image with no image measurement
+    /// yet borrows the video ones — they over-predict, which is safe; a video chunk never
+    /// borrows an image's, which would under-predict.
     public func predictedActivation(
-        engineID: String, phase: String, machine: MachineKey, peakUnits: Double
+        engineID: String, phase: String, machine: MachineKey, peakUnits: Double, singleFrame: Bool? = nil
     ) -> (bytes: Double, extrapolatedAbove: Bool)? {
+        var candidates = samples.filter {
+            $0.engineID == engineID && $0.phase == phase && $0.machine.runsLike(machine) && $0.peakUnits > 0
+        }
+        if let singleFrame {
+            let sameShape = candidates.filter { $0.isSingleFrame == singleFrame }
+            if !sameShape.isEmpty || !singleFrame { candidates = sameShape }
+        }
         var bySize: [Double: Double] = [:]
-        for sample in samples where sample.engineID == engineID && sample.phase == phase
-            && sample.machine.runsLike(machine) && sample.peakUnits > 0 {
+        for sample in candidates {
             let activation = Double(sample.peakBytes - sample.weightBytes)
             guard activation > 0 else { continue }
             bySize[sample.peakUnits] = max(bySize[sample.peakUnits] ?? 0, activation)
@@ -379,7 +405,7 @@ public extension CalibrationStore {
         var kept: [String: Int] = [:]
         var result: [CalibrationSample] = []
         for sample in samples.reversed() {
-            let key = "\(sample.engineID)|\(sample.phase)|\(sample.chipName)|\(sample.gpuCores ?? 0)"
+            let key = "\(sample.engineID)|\(sample.phase)|\(sample.chipName)|\(sample.gpuCores ?? 0)|\(sample.isSingleFrame.map(String.init) ?? "-")"
             let count = kept[key, default: 0]
             guard count < keepPerKey else { continue }
             kept[key] = count + 1

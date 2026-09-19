@@ -122,6 +122,33 @@ public final class UpscaleModel {
     public private(set) var batchMessage: String?
     /// Why no plan: set when the resolver refuses, with its numbers.
     public private(set) var refusal: String?
+    /// Set when the refusal is about memory: how much the smallest plan needs, and whether
+    /// closing apps would make room.
+    public private(set) var shortfall: MemoryShortfall?
+
+    public struct MemoryShortfall: Equatable, Sendable {
+        /// The smallest plan's peak.
+        public let requiredGB: Double
+        /// Free right now.
+        public let freeGB: Double
+        /// The most this Mac's GPU can use, with every other app closed.
+        public let usableGB: Double
+        /// Free memory it needs: its peak plus the 15% safety margin plans keep.
+        public var neededFreeGB: Double { requiredGB / 0.85 }
+        /// How much more must be freed, or nil if no amount would do.
+        public var moreToFreeGB: Double? {
+            requiredGB <= usableGB ? max(neededFreeGB - freeGB, 0.1) : nil
+        }
+
+        public var advice: String {
+            if let more = moreToFreeGB {
+                return String(format: "It needs about %.1f GB and %.1f GB is free. It fits on this Mac once about %.1f GB more is free — quitting a large app such as Xcode or a browser with many tabs usually does it. This checks again every few seconds.",
+                              requiredGB, freeGB, more)
+            }
+            return String(format: "It needs about %.1f GB — more than this Mac's GPU can use (%.1f GB), even with every other app closed. Choose a smaller output size.",
+                          requiredGB, usableGB)
+        }
+    }
     public private(set) var modelState: ModelState = .checking
     /// The job this screen most recently started.
     public private(set) var currentJobID: UUID?
@@ -373,8 +400,16 @@ public final class UpscaleModel {
                     target: outputSize.target, quality: quality, installedVariants: [variant]
                 )
                 refusal = nil
+                shortfall = nil
+            } catch StageError.insufficientMemory(let required, _) {
+                plan = nil
+                let short = MemoryShortfall(requiredGB: required, freeGB: measured.availableMemoryGB,
+                                            usableGB: measured.usableMemoryGB)
+                shortfall = short
+                refusal = short.advice
             } catch {
                 plan = nil
+                shortfall = nil
                 refusal = String(describing: error)
             }
         }

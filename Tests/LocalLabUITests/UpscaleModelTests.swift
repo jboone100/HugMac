@@ -403,3 +403,18 @@ struct UpscaleModelTests {
     }
 }
 
+
+@Suite("Memory advice")
+struct MemoryAdviceTests {
+    @Test func closingAppsHelpsSaySoWithTheAmount() {
+        let short = UpscaleModel.MemoryShortfall(requiredGB: 13.2, freeGB: 11.0, usableGB: 24.0)
+        #expect(short.moreToFreeGB.map { abs($0 - (13.2 / 0.85 - 11.0)) < 0.01 } == true)
+        #expect(short.advice.contains("once about 4.5 GB more is free"))
+    }
+
+    @Test func tooLargeForTheMacSaysChooseSmaller() {
+        let short = UpscaleModel.MemoryShortfall(requiredGB: 30, freeGB: 20, usableGB: 24)
+        #expect(short.moreToFreeGB == nil)
+        #expect(short.advice.contains("even with every other app closed"))
+    }
+}
