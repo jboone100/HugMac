@@ -178,6 +178,13 @@ struct MarkdownTests {
         ])
     }
 
+    @Test func nestedBulletsBecomeSubPointsNotLiteralAsterisks() {
+        let text = "- **Device Support:** both families.\n    *   *Example:* a calculator.\n    *   *Exception:* a watch face."
+        #expect(MarkdownParser.parse(text) == [
+            .list(ordered: false, items: ["**Device Support:** both families.\n◦   *Example:* a calculator.\n◦   *Exception:* a watch face."]),
+        ])
+    }
+
     @Test func tables() {
         let blocks = MarkdownParser.parse("| Model | GB |\n|---|--:|\n| 9B | 6 |\n| 27B | 16 |")
         #expect(blocks == [.table(header: ["Model", "GB"], rows: [["9B", "6"], ["27B", "16"]])])

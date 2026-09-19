@@ -138,7 +138,11 @@ public enum MarkdownParser {
                     if listMarker(currentTrimmed) == ordered, !current.hasPrefix("    ") {
                         items.append(stripMarker(currentTrimmed))
                     } else if !currentTrimmed.isEmpty, current.hasPrefix(" "), !items.isEmpty {
-                        items[items.count - 1] += "\n" + currentTrimmed
+                        // An indented bullet is a sub-point, not text starting with "*".
+                        let line = listMarker(currentTrimmed) == false
+                            ? "◦ " + stripMarker(currentTrimmed)
+                            : currentTrimmed
+                        items[items.count - 1] += "\n" + line
                     } else {
                         break
                     }

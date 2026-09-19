@@ -308,15 +308,29 @@ public final class ChatModel {
 
         generation = Task { [weak self] in
             guard let self else { return }
+            // Text reaches the screen about 15 times a second, not per token: each update
+            // re-lays out the reply, and ~30 a second made long replies stutter.
+            var unshown = ""
+            var lastShown = Date.distantPast
+            @MainActor func show(force: Bool = false) {
+                guard !unshown.isEmpty, force || Date().timeIntervalSince(lastShown) >= 1.0 / 15 else { return }
+                let text = unshown
+                unshown = ""
+                lastShown = Date()
+                self.updateLastMessage(conversationID) { $0.text += text }
+            }
+            defer { show(force: true) }
             do {
                 try await self.ensureLoaded(fit.spec, vision: vision || fit.spec.needsVisionLoad)
                 for try await event in self.backend.stream(Array(turns), options: options) {
                     switch event {
                     case .text(let text):
-                        self.updateLastMessage(conversationID) { $0.text += text }
+                        unshown += text
+                        show()
                     case .trimmed(let dropped):
                         self.errorMessage = "The oldest \(dropped) message\(dropped == 1 ? " was" : "s were") left out to fit the \(ChatModelPicker.contextLabel(fit.context)) context."
                     case .finished(let stats):
+                        show(force: true)
                         self.updateLastMessage(conversationID) { $0.stats = stats }
                         self.residentBytes = await self.backend.residentBytes()
                         self.record(stats, for: fit.spec, vision: vision || fit.spec.needsVisionLoad)

@@ -309,7 +309,10 @@ private struct Transcript: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                // A plain stack, not a lazy one: a lazy stack estimates the height of rows it
+                // hasn't built, and every streamed token re-estimated a long conversation —
+                // the view went blank and the scroll bar jittered until it caught up.
+                VStack(alignment: .leading, spacing: 16) {
                     ForEach(model.messages) { message in
                         MessageRow(model: model, message: message,
                                    streaming: model.isGenerating && message.id == model.messages.last?.id)
@@ -324,7 +327,10 @@ private struct Transcript: View {
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            .onChange(of: model.messages.last?.text) { proxy.scrollTo("bottom", anchor: .bottom) }
+            // Stays pinned to the bottom as a reply grows, without a jump per token; a
+            // deliberate jump only when a message is sent or a conversation opened.
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: model.messages.count) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: model.activeID) { proxy.scrollTo("bottom", anchor: .bottom) }
         }
         .overlay {
