@@ -62,5 +62,5 @@ policy will be updated first. The effective date above shows the latest version.
 
 ## Contact
 
-Questions about privacy: open an issue at
-[github.com/jboone100/LocalLab/issues](https://github.com/jboone100/LocalLab/issues).
+Questions about privacy: email **[locallabai@gmail.com](mailto:locallabai@gmail.com)**, or open
+an issue at [github.com/jboone100/LocalLab/issues](https://github.com/jboone100/LocalLab/issues).

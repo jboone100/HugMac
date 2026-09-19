@@ -78,6 +78,7 @@ First release.
 
 - Support URL: https://github.com/jboone100/LocalLab
 - Privacy Policy URL: https://github.com/jboone100/LocalLab/blob/main/PRIVACY.md
+- Contact email (App Review Information and support): locallabai@gmail.com
 
 ## App Privacy (the privacy "nutrition label")
 
@@ -85,3 +86,20 @@ First release.
 collect data from this app." LocalLab has no server, no analytics and no accounts; the requests
 it sends to Hugging Face to search for and download models go directly from the user's Mac to
 Hugging Face and aren't collected by the developer.
+
+## App Review notes (4000)
+
+Paste into App Store Connect → the version page → App Review Information → Notes. Sign-in
+required: **off** (no accounts).
+
+```
+LocalLab runs AI models entirely on this Mac. No account or sign-in is needed, and the app has no server of its own.
+
+Models are downloaded from Hugging Face the first time they're used. They can be large (from about 0.6 GB to over 20 GB) and may take a while to download. For a quick test, choose Qwen3.5 0.8B (about 0.6 GB) in Chat. It downloads in a minute or two and runs on any Apple Silicon Mac.
+
+Smart Fit grades each model against this Mac's memory and speed. Models that won't run well are marked, and memory warnings explain why.
+
+The download location can be changed in Settings… (⌘,) → Storage, including to an external drive.
+
+Apart from model downloads from Hugging Face, nothing leaves the Mac. Prompts, images and videos are processed on-device.
+```
