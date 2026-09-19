@@ -3,9 +3,7 @@
 # The app target is a thin shell (App/) around the LocalLabUI library in this same package, so
 # `swift build`/`swift test` and the Xcode app compile identical code.
 #
-# Not sandboxed yet: the App Store vs Direct edition decision (plan §9.4) is still open. A
-# sandboxed build needs security-scoped bookmarks for the model library, which StorageRoot
-# already supports.
+# One sandboxed, hardened build for both the Mac App Store and direct download (plan §9.4).
 name: LocalLab
 options:
   bundleIdPrefix: io.github.jboone100
@@ -40,5 +38,8 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
-        ENABLE_HARDENED_RUNTIME: NO
-        ENABLE_APP_SANDBOX: NO
+        # Sandboxed and hardened in every configuration, so a debug run behaves like the one
+        # users get (plan §9.4). Entitlements: App/LocalLab.entitlements.
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: YES
+        CODE_SIGN_ENTITLEMENTS: App/LocalLab.entitlements

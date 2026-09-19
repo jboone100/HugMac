@@ -276,6 +276,8 @@ public final class UpscaleModel {
 
     /// Load one file for a preview, or several as a batch.
     public func load(_ urls: [URL]) async {
+        // Picked or dropped files are readable only while access is held (the sandbox).
+        urls.forEach(FileAccess.hold)
         guard urls.count > 1 else {
             if let url = urls.first { await load(url) }
             return
@@ -333,6 +335,7 @@ public final class UpscaleModel {
 
     /// Load a video or image. Anything else is refused with a sentence, not a crash.
     public func load(_ url: URL) async {
+        FileAccess.hold(url)
         loadError = nil
         batchMessage = nil
         batch = []

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The App Sandbox: required on the Mac App Store, and used for direct downloads too. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Outgoing connections only: model downloads and search on huggingface.co. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Files and folders the user picks or drops: images, videos, the model library. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- Remembering those grants across launches: the library folder, queued jobs' inputs. -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+</dict>
+</plist>

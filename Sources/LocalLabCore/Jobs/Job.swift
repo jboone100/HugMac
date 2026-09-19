@@ -172,6 +172,10 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
     public var note: String?
     /// How many times this job has been started — more than one means it resumed.
     public var attempts = 0
+    /// Saved access to input files outside the library, by path: in the sandbox a dropped
+    /// file is readable only until the app quits, so a job that waits or resumes needs these
+    /// to reach its input again. Nil in jobs saved before the sandbox.
+    public var inputBookmarks: [String: Data]?
 
     public init(
         id: UUID = UUID(), title: String, kind: Kind, dependsOn: UUID? = nil,
@@ -187,6 +191,14 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
 }
 
 extension Job {
+    /// Files the job reads that the user provided — not ones the app made.
+    public var inputURLs: [URL] {
+        switch kind {
+        case .upscale(let spec): spec.source.url.map { [$0] } ?? []
+        case .textToVideo(let spec): spec.startImage.map { [$0] } ?? []
+        }
+    }
+
     /// The same job with every file URL passed through `map` — used when the library moves,
     /// so saved inputs, outputs and results follow it.
     public func remappingURLs(_ map: (URL) -> URL) -> Job {

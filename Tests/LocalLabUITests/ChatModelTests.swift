@@ -3,17 +3,6 @@ import LocalLabCore
 import Testing
 @testable import LocalLabUI
 
-/// A value behind a lock — `Mutex` needs macOS 15, and the package supports 14.
-final class Locked<Value>: @unchecked Sendable {
-    private var value: Value
-    private let lock = NSLock()
-    init(_ value: Value) { self.value = value }
-    func withLock<R>(_ body: (inout Value) -> R) -> R {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&value)
-    }
-}
 
 /// Streams a scripted reply; records loads and ejects.
 final class FakeChatBackend: ChatBackend, @unchecked Sendable {

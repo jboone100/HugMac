@@ -220,14 +220,81 @@ struct LibraryMoverTests {
     }
 }
 
-/// A value behind a lock — `Mutex` needs macOS 15, and the package supports 14.
-final class Locked<Value>: @unchecked Sendable {
-    private var value: Value
-    private let lock = NSLock()
-    init(_ value: Value) { self.value = value }
-    func withLock<R>(_ body: (inout Value) -> R) -> R {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&value)
+
+@Suite("Sandbox file access")
+struct SandboxAccessTests {
+    @Test func aBookmarkFollowsAMovedFile() throws {
+        let folder = tempDirectory("access")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let original = folder.appendingPathComponent("clip.mov")
+        try Data("video".utf8).write(to: original)
+        let bookmark = try #require(FileAccess.bookmark(original))
+        let moved = folder.appendingPathComponent("renamed.mov")
+        try FileManager.default.moveItem(at: original, to: moved)
+        #expect(FileAccess.resolve(bookmark)?.lastPathComponent == "renamed.mov")
+        try FileManager.default.removeItem(at: moved)
+        #expect(FileAccess.resolve(bookmark) == nil, "gone is gone")
     }
+
+    @Test @MainActor func queuedJobsRememberInputsOutsideTheLibraryAndFollowThem() async throws {
+        let root = tempDirectory("queue")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ModelStore(root: StorageRoot(url: root.appendingPathComponent("library")))
+        try store.prepare()
+        let outside = root.appendingPathComponent("Desktop/photo.png")
+        try FileManager.default.createDirectory(at: outside.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("png".utf8).write(to: outside)
+        let inside = store.outputsDirectory.appendingPathComponent("earlier.png")
+        try Data("png".utf8).write(to: inside)
+
+        let queue = JobQueue(store: store, executors: ["upscale": InstantExecutor()], activity: NoActivityCore())
+        queue.pauseQueue()
+        func spec(_ url: URL) -> Job.Kind {
+            .upscale(UpscaleJobSpec(source: .image(url: url, width: 10, height: 10), target: .scale(2),
+                                    quality: .balanced, variant: .threeBInt8,
+                                    outputURL: store.outputsDirectory.appendingPathComponent("out.png")))
+        }
+        let fromOutside = queue.enqueue(title: "outside", kind: spec(outside))
+        let fromInside = queue.enqueue(title: "inside", kind: spec(inside))
+        #expect(fromOutside.inputBookmarks?[outside.path] != nil)
+        #expect(fromInside.inputBookmarks == nil, "the library is reachable anyway")
+
+        // The file moves while the job waits; when it starts it follows the file.
+        let moved = root.appendingPathComponent("Desktop/photo moved.png")
+        try FileManager.default.moveItem(at: outside, to: moved)
+        queue.resumeQueue()
+        for _ in 0 ..< 100 where queue.job(fromOutside.id)?.state == .queued { try? await Task.sleep(for: .milliseconds(10)) }
+        #expect(queue.job(fromOutside.id)?.inputURLs.first?.resolvingSymlinksInPath().path == moved.resolvingSymlinksInPath().path)
+        #expect(queue.job(fromInside.id)?.inputURLs.first?.path == inside.path, "an unmoved input keeps its path")
+    }
+
+    @Test func adoptingTheOldFolderBringsThisMacsFilesButNeverOverwrites() throws {
+        let old = tempDirectory("old"), container = tempDirectory("container")
+        defer { try? FileManager.default.removeItem(at: old); try? FileManager.default.removeItem(at: container) }
+        try FileManager.default.createDirectory(at: old.appendingPathComponent("conversations"), withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: old.appendingPathComponent("calibration.json"))
+        try Data("old".utf8).write(to: old.appendingPathComponent("probes.json"))
+        try Data("{}".utf8).write(to: old.appendingPathComponent("conversations/a.json"))
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        try Data("new".utf8).write(to: container.appendingPathComponent("probes.json"))
+
+        let copied = LegacyMigration.adoptPerUserData(from: old, into: container)
+        #expect(Set(copied) == ["calibration.json", "conversations"])
+        #expect(try String(contentsOf: container.appendingPathComponent("probes.json"), encoding: .utf8) == "new")
+        #expect(FileManager.default.fileExists(atPath: old.appendingPathComponent("calibration.json").path), "copied, not moved")
+    }
+}
+
+/// Finishes at once, writing a placeholder output.
+struct InstantExecutor: JobExecutor {
+    func run(_ job: Job, context: JobContext, progress: @Sendable @escaping (StageProgress) -> Void) async throws -> JobOutcome {
+        try Data("out".utf8).write(to: job.kind.outputURL)
+        return JobOutcome(outputURL: job.kind.outputURL, seconds: 0, peakBytes: 0, samples: [])
+    }
+}
+
+struct NoActivityCore: ActivityHolding {
+    func begin(reason: String) -> NSObjectProtocol { NSObject() }
+    func end(_ token: NSObjectProtocol) {}
 }

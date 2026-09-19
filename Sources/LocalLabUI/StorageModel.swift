@@ -41,12 +41,18 @@ public final class StorageModel {
     public private(set) var isMeasuring = false
     public private(set) var moveState: MoveState = .idle
     public private(set) var deleteError: String?
+    /// First sandboxed launch with an empty library: offer to use the one from before.
+    public private(set) var offersExistingLibrary = false
+    public private(set) var existingLibraryError: String?
+    static let sandboxWelcomeKey = "LocalLab.sandboxLibraryAsked"
 
     private let store: ModelStore
     private let installer: ModelInstaller
     private let queue: JobQueue
     private let chat: ChatModel?
     private let defaults: UserDefaults
+    /// Where this Mac's own files live — calibration, probes, conversations.
+    private let perUserDirectory: URL
     private let relaunch: @MainActor () -> Void
     /// Tell the other screens the library changed under them — a model deleted.
     private let libraryChanged: @MainActor () async -> Void
@@ -60,6 +66,8 @@ public final class StorageModel {
         queue: JobQueue,
         chat: ChatModel?,
         defaults: UserDefaults = .standard,
+        perUserDirectory: URL = CalibrationStore.defaultURL().deletingLastPathComponent(),
+        sandboxed: Bool = FileAccess.isSandboxed,
         busyReason: @escaping @MainActor () -> String? = { nil },
         libraryChanged: @escaping @MainActor () async -> Void = {},
         relaunch: @escaping @MainActor () -> Void = { Relaunch.now() }
@@ -72,10 +80,40 @@ public final class StorageModel {
         self.queue = queue
         self.chat = chat
         self.defaults = defaults
+        self.perUserDirectory = perUserDirectory
         self.busyReason = busyReason
         self.libraryChanged = libraryChanged
         self.relaunch = relaunch
         pendingMove = LibraryLocation.pendingMove(defaults: defaults)
+        offersExistingLibrary = sandboxed && !resolution.isCustom && resolution.unavailable == nil
+            && !LibraryLocation.isLibrary(resolution.store.baseDirectory)
+            && !defaults.bool(forKey: Self.sandboxWelcomeKey)
+    }
+
+    // MARK: - The library from before the sandbox
+
+    /// Where a folder picker for the old library should open.
+    public var existingLibraryHint: URL { LegacyMigration.unsandboxedFolder }
+
+    /// Use a library from before the sandbox, where it is: bring this Mac's measurements and
+    /// conversations into the container, remember the folder, restart.
+    public func adoptExistingLibrary(_ folder: URL) {
+        FileAccess.hold(folder)
+        let root = LibraryLocation.libraryRoot(forChosenFolder: folder)
+        guard LibraryLocation.isLibrary(root) else {
+            existingLibraryError = "That folder doesn't hold a LocalLab library — look for one with a “models” folder inside."
+            return
+        }
+        LegacyMigration.adoptPerUserData(from: root, into: perUserDirectory)
+        defaults.set(true, forKey: Self.sandboxWelcomeKey)
+        offersExistingLibrary = false
+        useLibrary(at: root)
+    }
+
+    /// Start with the empty library in the container.
+    public func declineExistingLibrary() {
+        defaults.set(true, forKey: Self.sandboxWelcomeKey)
+        offersExistingLibrary = false
     }
 
     public var totalBytes: Int64 {
@@ -143,6 +181,8 @@ public final class StorageModel {
     /// A folder the user picked: switch to it if it holds a library, otherwise plan a move
     /// into it (or into a `LocalLab` folder on it).
     public func choose(_ folder: URL) {
+        // A folder from the picker is reachable only while access is held (the sandbox).
+        FileAccess.hold(folder)
         if let blocker = moveBlocker {
             moveState = .failed(blocker)
             return

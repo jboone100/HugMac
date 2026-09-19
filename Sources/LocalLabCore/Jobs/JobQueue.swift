@@ -194,6 +194,14 @@ public final class JobQueue {
     public func enqueue(title: String, kind: Job.Kind, dependsOn: UUID? = nil) -> Job {
         var job = Job(title: title, kind: kind, dependsOn: dependsOn)
         job.sequence = (jobs.map(\.sequence).max() ?? 0) + 1
+        // Inputs outside the library are readable now; keep a way back to them for when the
+        // job runs, perhaps after a relaunch.
+        let library = store.baseDirectory.standardizedFileURL.path
+        var bookmarks: [String: Data] = [:]
+        for url in job.inputURLs where !url.standardizedFileURL.path.hasPrefix(library + "/") {
+            if let bookmark = FileAccess.bookmark(url) { bookmarks[url.path] = bookmark }
+        }
+        job.inputBookmarks = bookmarks.isEmpty ? nil : bookmarks
         jobs.append(job)
         save(job)
         scheduleNext()
@@ -366,6 +374,23 @@ public final class JobQueue {
             save(jobs[index])
             scheduleNext()
             return
+        }
+
+        // Reach its inputs again: after a relaunch the sandbox has forgotten them. A moved or
+        // renamed file is followed, and the job updated to its new path.
+        if let bookmarks = jobs[index].inputBookmarks {
+            var moved: [String: URL] = [:]
+            for (path, bookmark) in bookmarks {
+                guard let url = FileAccess.resolve(bookmark) else { continue }
+                // Compare real paths: a resolved bookmark may spell the same file differently
+                // (`/private/var/…` for `/var/…`), which isn't a move.
+                if url.resolvingSymlinksInPath().path != URL(fileURLWithPath: path).resolvingSymlinksInPath().path {
+                    moved[path] = url
+                }
+            }
+            if !moved.isEmpty {
+                jobs[index] = jobs[index].remappingURLs { moved[$0.path] ?? $0 }
+            }
         }
 
         jobs[index].state = .running

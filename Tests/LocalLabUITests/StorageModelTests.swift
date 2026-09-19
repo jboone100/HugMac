@@ -110,3 +110,54 @@ struct StorageModelTests {
         #expect(!workspace.store.isInstalled(repo: "mlx-community/Qwen3.5-0.8B-4bit"))
     }
 }
+
+@Suite("The library from before the sandbox")
+@MainActor
+struct ExistingLibraryTests {
+    @Test("Offered once, sandboxed, with an empty library; adopting it uses it in place")
+    func adopt() throws {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        let name = "locallab-adopt-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name) ?? .standard
+        defaults.removePersistentDomain(forName: name)
+        let old = workspace.root.appendingPathComponent("Old/LocalLab")
+        try ModelStore(root: StorageRoot(url: old)).prepare()
+        try Data("{}".utf8).write(to: old.appendingPathComponent("installed.json"))
+        try Data("measured".utf8).write(to: old.appendingPathComponent("calibration.json"))
+        let perUser = workspace.root.appendingPathComponent("Container/LocalLab")
+        let empty = ModelStore(root: StorageRoot(url: workspace.root.appendingPathComponent("Container/LocalLab")))
+        let relaunched = Locked(0)
+        let model = StorageModel(
+            resolution: LibraryLocation.Resolution(store: empty, isCustom: false, unavailable: nil),
+            installer: ModelInstaller(store: empty, hub: FakeHubStub(), availableBytes: { 1 << 40 }),
+            queue: JobQueue(store: empty, executor: FakeExecutor(), activity: NoActivity()),
+            chat: nil, defaults: defaults, perUserDirectory: perUser, sandboxed: true,
+            relaunch: { relaunched.withLock { $0 += 1 } }
+        )
+        #expect(model.offersExistingLibrary)
+
+        model.adoptExistingLibrary(workspace.root.appendingPathComponent("Old"))
+        #expect(model.existingLibraryError == nil, "a parent folder named for the library is found inside it")
+        #expect(defaults.string(forKey: "LocalLab.libraryPath") == old.standardizedFileURL.path)
+        #expect(FileManager.default.fileExists(atPath: perUser.appendingPathComponent("calibration.json").path))
+        #expect(relaunched.withLock { $0 } == 1)
+        #expect(!model.offersExistingLibrary)
+    }
+
+    @Test("A folder that isn't a library is refused with a sentence")
+    func notALibrary() {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        let empty = ModelStore(root: StorageRoot(url: workspace.root.appendingPathComponent("Container/LocalLab")))
+        let model = StorageModel(
+            resolution: LibraryLocation.Resolution(store: empty, isCustom: false, unavailable: nil),
+            installer: ModelInstaller(store: empty, hub: FakeHubStub(), availableBytes: { 1 << 40 }),
+            queue: JobQueue(store: empty, executor: FakeExecutor(), activity: NoActivity()),
+            chat: nil, perUserDirectory: workspace.root.appendingPathComponent("pu"), sandboxed: true,
+            relaunch: {}
+        )
+        model.adoptExistingLibrary(workspace.root)
+        #expect(model.existingLibraryError?.contains("doesn't hold a LocalLab library") == true)
+    }
+}

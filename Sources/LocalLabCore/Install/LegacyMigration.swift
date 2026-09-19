@@ -30,6 +30,40 @@ public enum LegacyMigration {
         return copied
     }
 
+    /// The per-user files that live beside a library in the unsandboxed layout — what this
+    /// Mac measured and said — as opposed to the library's own models and outputs.
+    public static let perUserItems = ["calibration.json", "probes.json", "conversations", "catalog-cache"]
+
+    /// On the first sandboxed launch the container is empty. When the user points LocalLab
+    /// at their old folder, copy its per-user files into the container (never over newer
+    /// ones); the library itself is used in place.
+    @discardableResult
+    public static func adoptPerUserData(from oldFolder: URL, into container: URL, fileManager: FileManager = .default) -> [String] {
+        var copied: [String] = []
+        try? fileManager.createDirectory(at: container, withIntermediateDirectories: true)
+        for item in perUserItems {
+            let from = oldFolder.appendingPathComponent(item)
+            let to = container.appendingPathComponent(item)
+            guard fileManager.fileExists(atPath: from.path), !fileManager.fileExists(atPath: to.path) else { continue }
+            if (try? fileManager.copyItem(at: from, to: to)) != nil { copied.append(item) }
+        }
+        return copied
+    }
+
+    /// The user's real home folder. Inside the sandbox `homeDirectoryForCurrentUser` is the
+    /// container; this is where a folder picker should start to find the old library.
+    public static var realHomeDirectory: URL {
+        if let entry = getpwuid(getuid()), let dir = entry.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: dir), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    /// Where the unsandboxed app kept everything.
+    public static var unsandboxedFolder: URL {
+        realHomeDirectory.appendingPathComponent("Library/Application Support/\(newFolderName)", isDirectory: true)
+    }
+
     /// Returns true if it moved something.
     @discardableResult
     public static func moveApplicationSupportIfNeeded(

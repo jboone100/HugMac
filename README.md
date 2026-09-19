@@ -6,6 +6,25 @@ Called HugMac until 2026-09-18. On first launch after the rename, the library mo
 `~/Library/Application Support/HugMac` to `…/LocalLab` (instantly, same volume), leaving a
 link at the old path; a Hugging Face token saved under the old Keychain name is still read.
 
+## Sandbox
+
+LocalLab is one sandboxed, hardened app for both the Mac App Store and direct download. It
+reaches only its own container, plus files and folders you pick or drop:
+
+- **Your library** can live anywhere you choose (Settings → Storage); access is remembered with
+  a bookmark. On the first sandboxed launch with an empty library, LocalLab asks for the one it
+  used before (`~/Library/Application Support/LocalLab`) and uses it in place — nothing copied
+  but this Mac's measurements and conversations.
+- **Files you drop or pick** stay readable for the session, and **queued jobs keep a bookmark**
+  for inputs outside the library, so a paused or waiting job reaches its input after a relaunch
+  — following it if it was moved or renamed.
+- The only network access is outgoing, to huggingface.co. `App/PrivacyInfo.xcprivacy` declares no
+  tracking and no data collected.
+
+```bash
+LOCALLAB_SANDBOX_CHECK=1 .build/xcode/Build/Products/Debug/LocalLab.app/Contents/MacOS/LocalLab
+```
+
 ## Current state
 
 Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), **the model
@@ -15,13 +34,13 @@ profile** with its first-run speed tests (plan §5.13–5.14), **Chat** (plan §
 
 | Target | What's in it | Status |
 |---|---|---|
-| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 175 tests pass |
+| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 179 tests pass |
 | `LocalLabCore/Catalog` | Hugging Face search client and offline cache, which engine runs a model, licences, Smart Fit verdicts for any MLX model | 15 tests |
 | `LocalLabCore/Chat` | chat model catalog, `ChatModelPicker` (Smart Fit), conversations, the markdown block parser | 21 tests |
 | `LocalLabCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `LocalLabMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `LocalLabCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 44 tests |
+| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 46 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `LocalLabMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
 | `LocalLabMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |

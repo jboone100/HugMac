@@ -1,3 +1,4 @@
+import AppKit
 import LocalLabCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -256,5 +257,47 @@ public struct StorageSettingsView: View {
         } label: {
             Label("In the library", systemImage: "shippingbox")
         }
+    }
+}
+
+/// Shown once, on the first sandboxed launch with an empty library: point LocalLab at the
+/// library it used before, so nothing is downloaded twice.
+public struct ExistingLibrarySheet: View {
+    let model: StorageModel
+
+    public init(model: StorageModel) {
+        self.model = model
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Where's your library?", systemImage: "externaldrive.badge.questionmark")
+                .font(.title2.weight(.semibold))
+            Text("LocalLab now runs in the macOS sandbox, which keeps apps to their own files. If you've used it before, show it your library — usually **\(LegacyMigration.unsandboxedFolder.path.replacingOccurrences(of: LegacyMigration.realHomeDirectory.path, with: "~"))** — and it keeps using it where it is. Your models stay put; this Mac's measurements and your conversations are copied in.")
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = model.existingLibraryError {
+                Text(error).foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Start with an empty library") { model.declineExistingLibrary() }
+                Spacer()
+                Button("Choose my library…") { choose() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = model.existingLibraryHint
+        panel.prompt = "Use This Library"
+        panel.message = "Choose the LocalLab folder that holds your models."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.adoptExistingLibrary(url)
     }
 }
