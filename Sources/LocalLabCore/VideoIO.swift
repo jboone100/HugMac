@@ -126,10 +126,24 @@ public enum VideoIO {
         }
         defer { reader.cancelReading() }
 
+        // `copyNextSampleBuffer` blocks until the decoder hands over a frame, and a decoder
+        // that never does — seen when several decode at once — blocks it forever. A watchdog
+        // cancels the reader after `stallSeconds` without a frame, which returns the call.
+        let watchdog = ReaderWatchdog(reader: reader)
+        let watch = Task.detached {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(stallSeconds))
+                if Task.isCancelled { return }
+                if watchdog.stalled() { return }
+            }
+        }
+        defer { watch.cancel() }
+
         let context = CIContext(options: [.useSoftwareRenderer: false])
         var frames: [CGImage] = []
         frames.reserveCapacity(count)
         while frames.count < count, let sample = output.copyNextSampleBuffer() {
+            watchdog.progressed()
             guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
             let image = CIImage(cvPixelBuffer: buffer)
             guard let cgImage = context.createCGImage(image, from: image.extent) else {
@@ -137,10 +151,53 @@ public enum VideoIO {
             }
             frames.append(cgImage)
         }
+        if watchdog.didStall {
+            throw IOError.readerFailed("the video decoder stopped responding")
+        }
         if let error = reader.error {
             throw IOError.readerFailed(error.localizedDescription)
         }
         return frames
+    }
+
+    /// Seconds without a decoded frame before reading is abandoned.
+    static let stallSeconds: Double = 20
+
+    /// The first frame, for a thumbnail — through `AVAssetImageGenerator`, whose async API
+    /// can't block the way a reader's `copyNextSampleBuffer` can.
+    public static func thumbnail(of url: URL, maxDimension: CGFloat = 640) async throws -> CGImage {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxDimension, height: maxDimension)
+        return try await generator.image(at: .zero).image
+    }
+
+    /// Notices when a reader stops producing frames, and cancels it.
+    final class ReaderWatchdog: @unchecked Sendable {
+        private let reader: AVAssetReader
+        private let lock = NSLock()
+        private var frames = 0
+        private var seen = 0
+        private(set) var didStall = false
+
+        init(reader: AVAssetReader) { self.reader = reader }
+
+        func progressed() {
+            lock.withLock { frames += 1 }
+        }
+
+        /// Called every `stallSeconds`: true (and the reader cancelled) if no frame arrived
+        /// since the last call.
+        func stalled() -> Bool {
+            let stuck = lock.withLock { () -> Bool in
+                defer { seen = frames }
+                return frames == seen
+            }
+            guard stuck, reader.status == .reading else { return false }
+            lock.withLock { didStall = true }
+            reader.cancelReading()
+            return true
+        }
     }
 
     // MARK: - Writing

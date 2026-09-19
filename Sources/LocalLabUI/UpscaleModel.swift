@@ -344,7 +344,7 @@ public final class UpscaleModel {
             if type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true {
                 let video = try await VideoIO.probe(url)
                 input = .video(video)
-                thumbnail = try? await VideoIO.readFrames(from: url, startIndex: 0, count: 1, fps: video.fps).first
+                thumbnail = try? await VideoIO.thumbnail(of: url)
             } else if type?.conforms(to: .image) == true,
                       let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                       let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
