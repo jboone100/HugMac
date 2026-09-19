@@ -78,44 +78,23 @@ private struct ModelBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Menu {
-                    Button {
-                        model.select(.smartFit)
-                    } label: {
-                        Text((model.selection == .smartFit ? "✓ " : "") + "Smart Fit — best for this Mac")
-                    }
-                    Divider()
-                    ForEach(model.choices, id: \.spec.repo) { fit in
-                        Button {
-                            model.select(.manual(repo: fit.spec.repo))
-                        } label: {
-                            Text(menuLabel(fit))
-                        }
-                        .disabled(!model.installed.contains(fit.spec.repo))
-                    }
-                } label: {
-                    Text(title)
+            // One row when there's room; otherwise the options drop to a second row rather
+            // than being squeezed until their labels wrap a letter per line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    modelControls
+                    options
+                    Spacer(minLength: 12)
+                    engineStatus
                 }
-                .fixedSize()
-
-                if let fit = model.current {
-                    GradeDot(grade: fit.grade)
-                    Menu("Context \(ChatModelPicker.contextLabel(fit.context))") {
-                        Button("Smart Fit") { model.setContext(nil) }
-                        ForEach(ChatModelPicker.contextLadder.reversed(), id: \.self) { tokens in
-                            Button(ChatModelPicker.contextLabel(tokens)) { model.setContext(tokens) }
-                        }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        modelControls
+                        Spacer(minLength: 12)
+                        engineStatus
                     }
-                    .fixedSize()
-                    if fit.spec.thinks {
-                        Toggle("Think first", isOn: Bindable(model).thinking)
-                            .toggleStyle(.checkbox)
-                            .help("Let the model reason before it answers — slower, sometimes better. The reasoning is shown folded.")
-                    }
+                    HStack(spacing: 10) { options }
                 }
-                Spacer()
-                engineStatus
             }
             if let fit = model.current {
                 Text(fit.arithmetic + " · " + speedSource(fit.speed))
@@ -138,6 +117,49 @@ private struct ModelBar: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    @ViewBuilder private var modelControls: some View {
+        Menu {
+            Button {
+                model.select(.smartFit)
+            } label: {
+                Text((model.selection == .smartFit ? "✓ " : "") + "Smart Fit — best for this Mac")
+            }
+            Divider()
+            ForEach(model.choices, id: \.spec.repo) { fit in
+                Button {
+                    model.select(.manual(repo: fit.spec.repo))
+                } label: {
+                    Text(menuLabel(fit))
+                }
+                .disabled(!model.installed.contains(fit.spec.repo))
+            }
+        } label: {
+            Text(title).lineLimit(1)
+        }
+        .fixedSize()
+        if let fit = model.current {
+            GradeDot(grade: fit.grade)
+        }
+    }
+
+    @ViewBuilder private var options: some View {
+        if let fit = model.current {
+            Menu("Context \(ChatModelPicker.contextLabel(fit.context))") {
+                Button("Smart Fit") { model.setContext(nil) }
+                ForEach(ChatModelPicker.contextLadder.reversed(), id: \.self) { tokens in
+                    Button(ChatModelPicker.contextLabel(tokens)) { model.setContext(tokens) }
+                }
+            }
+            .fixedSize()
+            if fit.spec.thinks {
+                Toggle("Think first", isOn: Bindable(model).thinking)
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+                    .help("Let the model reason before it answers — slower, sometimes better. The reasoning is shown folded.")
+            }
+        }
     }
 
     private var title: String {
@@ -167,11 +189,11 @@ private struct ModelBar: View {
     @ViewBuilder private var engineStatus: some View {
         switch model.engineState {
         case .unloaded:
-            Text("Not loaded").font(.caption).foregroundStyle(.secondary)
+            Text("Not loaded").font(.caption).foregroundStyle(.secondary).fixedSize()
         case .loading:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                Text("Loading…").font(.caption).foregroundStyle(.secondary).fixedSize()
             }
         case .loaded:
             Button {
@@ -183,7 +205,7 @@ private struct ModelBar: View {
             .help("Unload the model and give its memory back to the system.")
         case .failed(let message):
             Label("Couldn't load", systemImage: "exclamationmark.triangle")
-                .font(.caption).foregroundStyle(.red).help(message)
+                .font(.caption).foregroundStyle(.red).fixedSize().help(message)
         }
     }
 }

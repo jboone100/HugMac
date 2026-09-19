@@ -18,6 +18,10 @@ public actor MLXChatEngine: ChatBackend {
 
     public var isLoaded: Bool { container != nil }
 
+    public func residentBytes() -> Int64 {
+        container == nil ? 0 : MemoryRelease.heldBytes
+    }
+
     public func load(directory: URL) async throws {
         if loadedDirectory == directory, container != nil { return }
         eject()

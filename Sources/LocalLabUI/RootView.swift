@@ -5,9 +5,7 @@ import SwiftUI
 public struct RootView: View {
     let app: AppModel
     private let initialFile: URL?
-    @State private var selection: Section?
-
-    enum Section: Hashable { case chat, machine, upscale, jobs }
+    private typealias Section = AppSection
 
     /// `initialFile` pre-loads the Upscale screen — used by debug runs, and later by
     /// "Open With".
@@ -15,12 +13,18 @@ public struct RootView: View {
         self.app = app
         self.initialFile = initialFile
         // First launch opens on This Mac, where the first-run measurement shows its work.
-        _selection = State(initialValue: initialFile == nil && app.machine.needsMeasuring ? .machine : .upscale)
+        if app.section == nil {
+            app.section = initialFile == nil && app.machine.needsMeasuring ? .machine : .upscale
+        }
     }
 
     public var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List(selection: Bindable(app).section) {
+                SwiftUI.Section("Models") {
+                    Label("Browse", systemImage: "square.grid.2x2")
+                        .tag(Section.browse)
+                }
                 SwiftUI.Section("Tasks") {
                     Label("Chat", systemImage: "bubble.left.and.bubble.right")
                         .tag(Section.chat)
@@ -66,10 +70,11 @@ public struct RootView: View {
     }
 
     @ViewBuilder private var detail: some View {
-        switch selection {
+        switch app.section {
         case .jobs: JobsView(queue: app.queue)
         case .machine: MachineView(model: app.machine)
         case .chat: ChatView(model: app.chat)
+        case .browse: BrowseView(model: app.browse)
         default: UpscaleView(model: app.upscale)
         }
     }

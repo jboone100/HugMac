@@ -176,4 +176,10 @@ public protocol ChatBackend: Sendable {
     func stream(_ turns: [ChatTurn], options: ChatOptions) -> AsyncThrowingStream<ChatEvent, Error>
     /// Drop the model and give its memory back to the system.
     func eject() async
+    /// Bytes the loaded model holds now — 0 when nothing is loaded.
+    func residentBytes() async -> Int64
+}
+
+public extension ChatBackend {
+    func residentBytes() async -> Int64 { 0 }
 }

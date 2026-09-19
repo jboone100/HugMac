@@ -23,13 +23,24 @@ final class FakeChatBackend: ChatBackend, @unchecked Sendable {
     let ejects = Locked(0)
     let lastTurns = Locked<[ChatTurn]>([])
 
-    init(reply: [String] = ["Hello ", "**world**"], delay: Duration = .zero) {
+    let resident: Int64
+    let loaded = Locked(false)
+
+    init(reply: [String] = ["Hello ", "**world**"], delay: Duration = .zero, resident: Int64 = 0) {
         self.reply = reply
         self.delay = delay
+        self.resident = resident
     }
 
-    func load(directory: URL) async throws { loads.withLock { $0.append(directory) } }
-    func eject() async { ejects.withLock { $0 += 1 } }
+    func load(directory: URL) async throws {
+        loads.withLock { $0.append(directory) }
+        loaded.withLock { $0 = true }
+    }
+    func eject() async {
+        ejects.withLock { $0 += 1 }
+        loaded.withLock { $0 = false }
+    }
+    func residentBytes() async -> Int64 { loaded.withLock { $0 } ? resident : 0 }
 
     func stream(_ turns: [ChatTurn], options: ChatOptions) -> AsyncThrowingStream<ChatEvent, Error> {
         lastTurns.withLock { $0 = turns }
@@ -134,6 +145,41 @@ struct ChatModelTests {
             Issue.record("after a reply, speed should be measured here")
             return
         }
+    }
+
+    @Test("The loaded model's own memory doesn't count against it: no false warning after a reply")
+    func ownMemoryIsNotPressure() async {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        install(medium, in: workspace)
+        let free = Locked(13.0)
+        let backend = FakeChatBackend(resident: 5 * 1_073_741_824)
+        let queue = JobQueue(store: workspace.store, executor: FakeExecutor(), activity: NoActivity(),
+                             calibrationURL: workspace.calibrationURL)
+        let chat = ChatModel(
+            store: workspace.store,
+            installer: ModelInstaller(store: workspace.store, hub: FakeHubStub(), availableBytes: { 1 << 40 }),
+            queue: queue, backend: backend,
+            conversationStore: ConversationStore(directory: workspace.root.appendingPathComponent("conversations")),
+            defaults: UserDefaults(suiteName: "locallab-own-\(UUID().uuidString)") ?? .standard,
+            detectHardware: { m2Max(availableGB: free.withLock { $0 }) }
+        )
+        #expect(chat.current?.grade == .green)
+        #expect(chat.current?.context == 32_768)
+
+        chat.draft = "hi"
+        chat.send()
+        // Loading the model takes 5 GB of what was free.
+        free.withLock { $0 = 8 }
+        await waitUntilIdle(chat)
+        #expect(chat.current?.grade == .green, "its own 5 GB is not someone else's")
+        #expect(chat.current?.context == 32_768, "the context isn't cut mid-conversation")
+
+        await chat.eject()
+        free.withLock { $0 = 13 }
+        chat.refresh()
+        #expect(chat.residentBytes == 0)
+        #expect(chat.current?.context == 32_768)
     }
 
     @Test("Stop keeps what arrived and marks the reply stopped")

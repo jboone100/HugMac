@@ -105,7 +105,10 @@ public struct ChatModelPicker: Sendable {
     /// estimated from memory bandwidth: the probe's measured figure when there is one, the
     /// spec sheet's otherwise.
     public func speed(of spec: ChatModelSpec) -> (tokensPerSecond: Double, source: TimeEstimate) {
-        let gbPerToken = spec.activeWeightBytes / 1e9
+        // Expert weights are gathered, not streamed: a mixture of experts reaches roughly
+        // half the bandwidth a dense model does. Priced as extra bytes, so a dense model's
+        // measured rate still applies.
+        let gbPerToken = spec.activeWeightBytes / 1e9 / (spec.isMixtureOfExperts ? 0.55 : 1)
         let estimate = calibration.estimate(
             engineID: Self.engineID, phase: "decode", machine: hardware.machineKey, workUnits: gbPerToken
         )
@@ -115,13 +118,17 @@ public struct ChatModelPicker: Sendable {
         // Token generation streams the active weights once per token. MLX reaches roughly
         // three quarters of the probe's measured bandwidth on 4-bit weights, and about 60% of
         // the spec sheet's — starting values, replaced by the first measured chat here.
+        //
+        // Plus a fixed ~1.5 ms a token — sampling, detokenizing, kernel launches — which
+        // bandwidth alone misses: without it a 0.5B model "runs" at 900 tokens a second.
+        let overhead = 0.0015
         let seconds: Double
         let basis: ScalingBasis
         if let measured = calibration.probes.latest(for: hardware.machineKey)?.value(.memoryBandwidth) {
-            seconds = gbPerToken / (measured * 0.75)
+            seconds = gbPerToken / (measured * 0.75) + overhead
             basis = .probes
         } else {
-            seconds = gbPerToken / (hardware.memoryBandwidthGBps * 0.6)
+            seconds = gbPerToken / (hardware.memoryBandwidthGBps * 0.6) + overhead
             basis = .specs
         }
         return (1 / seconds, .extrapolated(seconds: seconds, fromChip: hardware.chipName, basis: basis))
@@ -136,8 +143,12 @@ public struct ChatModelPicker: Sendable {
     /// Green first, not quality first: with 19 GB free on a 32 GB Mac, quality first picks
     /// a 27B squeezed to a 4k context at ~15 tokens a second over a 9B at 32k and ~40.
     public func smartFit(installed: Set<String>) -> ChatFit? {
-        let candidates = ChatCatalog.models
-            .filter { installed.contains($0.repo) }
+        smartFit(candidates: ChatCatalog.models.filter { installed.contains($0.repo) })
+    }
+
+    /// Smart Fit over any installed models — curated or estimated from their repos.
+    public func smartFit(candidates specs: [ChatModelSpec]) -> ChatFit? {
+        let candidates = specs
             .map { fit($0) }
             .filter { !$0.grade.isRed && $0.tokensPerSecond >= Self.usableTokensPerSecond }
         return candidates.max { a, b in

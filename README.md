@@ -11,20 +11,21 @@ link at the old path; a Hugging Face token saved under the old Keychain name is 
 Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), **the model
 installer**, ported from MLXUI's `InstallManager`, the **job queue**, the **machine
 profile** with its first-run speed tests (plan §5.13–5.14), **Chat** (plan §5.12), and
-**Settings → Storage** (plan §5.4).
+**Settings → Storage** (plan §5.4), and **Browse** (plan §5.2, §9.1).
 
 | Target | What's in it | Status |
 |---|---|---|
-| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 152 tests pass |
+| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 167 tests pass |
+| `LocalLabCore/Catalog` | Hugging Face search client and offline cache, which engine runs a model, licences, Smart Fit verdicts for any MLX model | 15 tests |
 | `LocalLabCore/Chat` | chat model catalog, `ChatModelPicker` (Smart Fit), conversations, the markdown block parser | 21 tests |
 | `LocalLabCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `LocalLabMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `LocalLabCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `LocalLabUI` | the **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 29 tests |
+| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 35 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `LocalLabMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
 | `LocalLabMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
-| `locallab-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile`, `--chat` | builds |
+| `locallab-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile`, `--chat`, `--browse` | builds |
 
 ## Building
 
@@ -136,6 +137,31 @@ v1 covers the Qwen3.5 family (0.8B to 122B-A10B, Apache-2.0).
 
 ```bash
 swift run locallab-bench --chat mlx-community/Qwen3.5-9B-4bit "Explain unified memory in two sentences."
+```
+
+## Browse
+
+Every MLX model on Hugging Face, graded by **Smart Fit** for this Mac (plan §5.2, §9.1).
+
+- **Live search** of Hugging Face, with task filters (Chat, Image Q&A, Speech, Image, Video,
+  Upscale, Embeddings) and sorts (Best fit, Most downloaded, Most liked, Recently updated).
+  mlx-community by default; *All publishers* includes everyone. The last results are cached,
+  so Browse works offline and says when it last fetched.
+- **Graded for this Mac**: green, yellow or red with the arithmetic — weights + context cache +
+  runtime against what the GPU can use, and tokens a second. Sizes come from the listing (the
+  API's parameter counts plus quantization scales — within a few MB for 4/8-bit), and exact
+  from the file list and `config.json` once a model is opened.
+- **Runnable first.** Which engine runs a model is decided by its architecture and task: chat
+  models (any `model_type` `mlx-swift-lm` loads) and the SeedVR2 upscalers today. Others are
+  listed after, with why not, and whether they'd fit once they can.
+- **Install** from the detail pane; a licence other than Apache/MIT/BSD-style must be read
+  and acknowledged first. **Open in Chat** takes an installed chat model straight to Chat —
+  which can use any installed chat model, curated or not (uncurated ones are graded from
+  their repo, labelled as estimates).
+
+```bash
+swift run locallab-bench --browse                 # the list, graded for this Mac
+swift run locallab-bench --browse --open <repo>   # listing estimate vs exact figures
 ```
 
 ## Storage

@@ -6,21 +6,31 @@ import UserNotifications
 
 /// App-lifetime state. Owned by the `App`, not by a window, so a job keeps running when its
 /// window closes and a reopened window picks it back up.
+/// The sidebar's destinations — app state, so one screen can send you to another (Browse's
+/// "Open in Chat").
+public enum AppSection: Hashable, Sendable {
+    case browse, chat, machine, upscale, jobs
+}
+
 @MainActor
 @Observable
 public final class AppModel {
+    public var section: AppSection?
     public let queue: JobQueue
     public let upscale: UpscaleModel
     public let machine: MachineModel
     public let chat: ChatModel
     public let storage: StorageModel
+    public let browse: BrowseModel
 
-    public init(queue: JobQueue, upscale: UpscaleModel, machine: MachineModel, chat: ChatModel, storage: StorageModel) {
+    public init(queue: JobQueue, upscale: UpscaleModel, machine: MachineModel, chat: ChatModel,
+                storage: StorageModel, browse: BrowseModel) {
         self.queue = queue
         self.upscale = upscale
         self.machine = machine
         self.chat = chat
         self.storage = storage
+        self.browse = browse
     }
 
     /// The production wiring: the default library, the real installer and engine, this
@@ -62,8 +72,30 @@ public final class AppModel {
                 await upscale.refreshModelState()
             }
         )
-        return AppModel(queue: queue, upscale: upscale, machine: machine, chat: chat, storage: storage)
+        let router = AppRouter()
+        let browse = BrowseModel(
+            store: store, installer: installer, queue: queue,
+            libraryChanged: {
+                chat.refresh()
+                machine.refresh()
+                await upscale.refreshModelState()
+                await storage.refresh()
+            },
+            openInChat: { repo in
+                chat.select(.manual(repo: repo))
+                router.app?.section = .chat
+            }
+        )
+        let app = AppModel(queue: queue, upscale: upscale, machine: machine, chat: chat, storage: storage, browse: browse)
+        router.app = app
+        return app
     }
+}
+
+/// Lets a screen built before the app model send you to another screen.
+@MainActor
+final class AppRouter {
+    weak var app: AppModel?
 }
 
 /// A local notification when a long job ends — you shouldn't have to keep checking.

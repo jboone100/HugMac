@@ -16,6 +16,9 @@ struct LocalLabApp: App {
                 .background(DebugLaunch.Snapshotter())
                 .task { delegate.app = app }
         }
+        // Room for a sidebar, a list and a detail pane side by side — Browse and Chat both
+        // have three columns. The minimum stays 900 × 640 for small screens.
+        .defaultSize(width: 1280, height: 860)
         Settings {
             SettingsView(app: app)
         }

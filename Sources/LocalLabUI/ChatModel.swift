@@ -34,6 +34,8 @@ public final class ChatModel {
     /// What to install when no chat model is installed yet.
     public private(set) var recommendations: [ChatFit] = []
     public private(set) var installed: Set<String> = []
+    /// Installed chat models: the curated ones, and any other the Browse screen installed.
+    public private(set) var installedSpecs: [ChatModelSpec] = []
     public private(set) var engineState: EngineState = .unloaded
     public private(set) var isGenerating = false
     public private(set) var errorMessage: String?
@@ -96,14 +98,25 @@ public final class ChatModel {
 
     public var messages: [ChatMessage] { active?.messages ?? [] }
 
+    /// Memory the loaded chat model holds. It counts as *available to chat*: otherwise
+    /// re-grading after a reply measures free memory with the model's own 5 GB missing, calls
+    /// it "close some apps", and cuts the context from 32k to 4k.
+    public private(set) var residentBytes: Int64 = 0
+
     public var picker: ChatModelPicker {
-        ChatModelPicker(hardware: detectHardware(), calibration: queue.calibration)
+        let hardware = detectHardware()
+        return ChatModelPicker(
+            hardware: hardware.withAvailableMemory(hardware.availableMemoryBytes + residentBytes),
+            calibration: queue.calibration
+        )
     }
 
-    /// Every catalog model graded for this Mac, installed first.
+    /// Every curated model, and every other installed one, graded for this Mac — installed
+    /// first.
     public var choices: [ChatFit] {
         let picker = self.picker
-        return ChatCatalog.models.map { picker.fit($0) }.sorted { a, b in
+        let extra = installedSpecs.filter { !$0.isCurated }
+        return (ChatCatalog.models + extra).map { picker.fit($0) }.sorted { a, b in
             let ai = installed.contains(a.spec.repo), bi = installed.contains(b.spec.repo)
             if ai != bi { return ai }
             return a.spec.qualityScore > b.spec.qualityScore
@@ -125,12 +138,13 @@ public final class ChatModel {
     /// Re-resolve the model for this Mac as it is now: after launch, an install, a job, or a
     /// change of selection. Smart Fit picks up a better installed model by itself.
     public func refresh() {
-        installed = Set(ChatCatalog.models.map(\.repo).filter { store.isInstalled(repo: $0) })
+        installedSpecs = InstalledChatModels.specs(in: store)
+        installed = Set(installedSpecs.map(\.repo))
         let picker = self.picker
         unavailableReason = nil
         switch selection {
         case .smartFit:
-            current = picker.smartFit(installed: installed).map { fit in
+            current = picker.smartFit(candidates: installedSpecs).map { fit in
                 contextOverride.map { picker.fit(fit.spec, context: $0) } ?? fit
             }
             if current == nil {
@@ -139,7 +153,7 @@ public final class ChatModel {
                     : "None of the installed chat models runs well on this Mac right now."
             }
         case .manual(let repo):
-            guard let spec = ChatCatalog.spec(forRepo: repo), installed.contains(repo) else {
+            guard let spec = installedSpecs.first(where: { $0.repo == repo }) else {
                 current = nil
                 unavailableReason = "The chosen model isn't installed."
                 break
@@ -230,6 +244,7 @@ public final class ChatModel {
                         self.errorMessage = "The oldest \(dropped) message\(dropped == 1 ? " was" : "s were") left out to fit the \(ChatModelPicker.contextLabel(fit.context)) context."
                     case .finished(let stats):
                         self.updateLastMessage(conversationID) { $0.stats = stats }
+                        self.residentBytes = await self.backend.residentBytes()
                         self.record(stats, for: fit.spec)
                     }
                 }
@@ -284,6 +299,8 @@ public final class ChatModel {
         idleTimer?.cancel()
         await backend.eject()
         engineState = .unloaded
+        residentBytes = 0
+        refresh()
     }
 
     /// Before a job: let a streaming reply finish, then give the memory back.
@@ -298,6 +315,7 @@ public final class ChatModel {
         do {
             try await backend.load(directory: store.directory(forRepo: spec.repo))
             engineState = .loaded(repo: spec.repo)
+            residentBytes = await backend.residentBytes()
         } catch {
             engineState = .failed(error.localizedDescription)
             throw error
@@ -321,7 +339,7 @@ public final class ChatModel {
         let machine = detectHardware().machineKey
         queue.recordMeasurements([CalibrationSample(
             engineID: ChatModelPicker.engineID, phase: "decode",
-            workUnits: Double(stats.generatedTokens) * spec.activeWeightBytes / 1e9,
+            workUnits: Double(stats.generatedTokens) * spec.activeWeightBytes / 1e9 / (spec.isMixtureOfExperts ? 0.55 : 1),
             seconds: stats.generateSeconds, peakBytes: 0, machine: machine,
             note: "\(spec.displayName), \(stats.generatedTokens) tokens"
         )])

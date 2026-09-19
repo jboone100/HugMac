@@ -32,10 +32,16 @@ public struct ChatModelSpec: Sendable, Equatable, Identifiable, Hashable {
     public let qualityScore: Int
     /// The model emits a `<think>` block before answering unless told not to.
     public let thinks: Bool
+    /// Its figures and quality score were reviewed (the curated list), rather than
+    /// estimated from its repo.
+    public var isCurated = true
 
     public var id: String { repo }
 
     public var weightGB: Double { Double(weightBytes) / 1_073_741_824 }
+
+    /// A mixture of experts: it reads only part of its weights per token.
+    public var isMixtureOfExperts: Bool { activeParamsB < totalParamsB * 0.9 }
 
     /// Bytes read per generated token.
     public var activeWeightBytes: Double {
@@ -94,5 +100,66 @@ public enum ChatCatalog {
             qualityScore: score,
             thinks: true
         )
+    }
+}
+
+// MARK: - Models from outside the curated list
+
+extension ChatModelSpec {
+    /// A spec for a chat model LocalLab knows only from its repo: its weights and
+    /// `config.json`. Quality is **estimated** from size (`isCurated` false): larger models are
+    /// usually better within a generation, which is all Smart Fit may assume without a
+    /// reviewed score. A mixture of experts reads roughly its routed share per token, with a
+    /// floor for the always-active attention and shared layers.
+    public static func estimated(
+        repo: String, weightBytes: Int64, config: ModelConfigSummary?, parameterCount: Int64? = nil,
+        license: String? = nil, revision: String? = nil
+    ) -> ChatModelSpec {
+        let bits = Double(config?.bits ?? 4)
+        let group = Double(config?.groupSize ?? 64)
+        let params = parameterCount.map(Double.init)
+            ?? Double(weightBytes) / (bits / 8 + 4 / group)
+        let totalB = params / 1e9
+        var activeB = totalB
+        if let experts = config?.experts, let perToken = config?.expertsPerToken, experts > 0 {
+            activeB = max(totalB * Double(perToken) / Double(experts), totalB * 0.1)
+        }
+        let score = Int(min(80, 25 + 12 * log2(max(totalB, 0.5)))) - 5
+        let name = String(repo.split(separator: "/").last ?? Substring(repo))
+        return ChatModelSpec(
+            repo: repo,
+            displayName: name,
+            license: license ?? "unknown",
+            revision: revision ?? "",
+            weightBytes: weightBytes,
+            totalParamsB: totalB,
+            activeParamsB: activeB,
+            kvLayers: config?.cacheLayers ?? 32,
+            kvHeads: config?.kvHeads ?? 8,
+            headDim: config?.headDim ?? 128,
+            maxContext: config?.maxContext ?? 32_768,
+            qualityScore: score,
+            thinks: config?.modelType?.hasPrefix("qwen3") ?? false,
+            isCurated: false
+        )
+    }
+}
+
+/// Chat models installed in a library, curated or not — what Chat can offer.
+public enum InstalledChatModels {
+    public static func specs(in store: ModelStore) -> [ChatModelSpec] {
+        let registry = InstallRegistry.load(store)
+        var specs = ChatCatalog.models.filter { store.isInstalled(repo: $0.repo) }
+        let curated = Set(specs.map(\.repo))
+        for (repo, installed) in registry.models where !curated.contains(repo) && store.isInstalled(repo: repo) {
+            let directory = store.directory(forRepo: repo)
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent("config.json")),
+                  let config = ModelConfigSummary.parse(data),
+                  let type = config.modelType,
+                  RunnerSupport.chatModelTypes.contains(type), RunnerSupport.chatExclusions[type] == nil else { continue }
+            let weights = installed.files.filter { $0.path.hasSuffix(".safetensors") }.reduce(Int64(0)) { $0 + $1.size }
+            specs.append(.estimated(repo: repo, weightBytes: weights, config: config, revision: installed.revision))
+        }
+        return specs
     }
 }
