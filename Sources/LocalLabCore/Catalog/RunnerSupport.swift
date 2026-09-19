@@ -35,6 +35,20 @@ public enum RunnerSupport {
         "jamba_3b", "mistral3", "apertus",
     ]
 
+    /// `model_type`s `mlx-swift-lm` 3.31.3's `VLMModelFactory` loads with their vision half —
+    /// copied from its registry. These chat about images as well as text.
+    public static let visionModelTypes: Set<String> = [
+        "paligemma", "qwen2_vl", "qwen2_5_vl", "qwen3_vl", "qwen3_5", "qwen3_5_moe", "idefics3",
+        "gemma3", "gemma4", "smolvlm", "fastvlm", "llava_qwen2", "pixtral", "mistral3", "lfm2_vl", "glm_ocr",
+    ]
+
+    /// Whether a model can be asked about images: its architecture has a vision half the
+    /// runtime loads, and its task says it takes images.
+    public static func seesImages(_ entry: CatalogEntry) -> Bool {
+        guard let type = entry.modelType, visionModelTypes.contains(type) else { return false }
+        return entry.task == "image-text-to-text" || entry.task == "any-to-any"
+    }
+
     /// Loadable, but LocalLab can't show their replies properly yet.
     public static let chatExclusions: [String: String] = [
         "gpt_oss": "Its replies use the “harmony” format, which LocalLab doesn't read yet — they'd show as raw control tokens.",
@@ -48,13 +62,15 @@ public enum RunnerSupport {
             if let reason = chatExclusions[type] { return .notYet(reason) }
             let textTasks: Set<String?> = ["text-generation", "image-text-to-text", "conversational", nil]
             if chatModelTypes.contains(type), textTasks.contains(entry.task) { return .chat }
+            // Vision-only architectures (Qwen2.5-VL, SmolVLM, …) chat through their vision load.
+            if seesImages(entry) { return .chat }
         }
         return .notYet(reason(for: entry.task))
     }
 
     static func reason(for task: String?) -> String {
         switch task {
-        case "image-text-to-text": "Image Q&A comes in a later phase; this architecture isn't supported for text chat."
+        case "image-text-to-text": "LocalLab's vision engine doesn't support this architecture yet."
         case "automatic-speech-recognition": "Speech to text comes in a later phase."
         case "text-to-speech", "text-to-audio": "Speech and audio generation come in a later phase."
         case "text-to-image": "Image generation comes in a later phase."

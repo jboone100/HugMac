@@ -15,13 +15,13 @@ profile** with its first-run speed tests (plan §5.13–5.14), **Chat** (plan §
 
 | Target | What's in it | Status |
 |---|---|---|
-| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 168 tests pass |
+| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 175 tests pass |
 | `LocalLabCore/Catalog` | Hugging Face search client and offline cache, which engine runs a model, licences, Smart Fit verdicts for any MLX model | 15 tests |
 | `LocalLabCore/Chat` | chat model catalog, `ChatModelPicker` (Smart Fit), conversations, the markdown block parser | 21 tests |
 | `LocalLabCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `LocalLabMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `LocalLabCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 37 tests |
+| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 44 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `LocalLabMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
 | `LocalLabMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
@@ -133,6 +133,13 @@ graded with its arithmetic — weights + context cache + runtime, and tokens a s
   turns, so each reply reads only the new message (measured: 20 new tokens in 0.2 s with 482
   already cached). It's rebuilt — the conversation read once — after an unload, a switch of
   conversation, *Think first* or context, or when the context fills.
+- **Ask about images.** Attach a photo (paperclip, or drop it on the conversation) and ask
+  about it — or just send it to have it described. Smart Fit picks a model that can see; the
+  Qwen3.5 family can. The model loads its vision half only for conversations with images,
+  since it costs memory (4.7 → 5.5 GB for the 9B) and speed (~38 → ~16 tok/s here); vision
+  replies are measured apart from text ones. Images are copied into the conversation.
+  Browse marks models that see images, and vision architectures that chat only through the
+  vision runtime (Qwen2.5-VL, SmolVLM, Pixtral, …) now run.
 - **Replies render** as markdown, code, tables or JSON, with a per-message *Show as* override
   remembered per model; a reasoning model's thinking is folded, and off unless *Think first*.
 - **Speed is measured** from each reply and feeds the next estimate. Conversations are saved in

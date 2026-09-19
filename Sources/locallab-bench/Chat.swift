@@ -2,7 +2,7 @@ import Foundation
 import LocalLabCore
 import LocalLabMLX
 
-/// `locallab-bench --chat <repo> <prompt> [--think] [--followup <prompt>]` — run one reply through the real MLX chat
+/// `locallab-bench --chat <repo> <prompt> [--think] [--followup <prompt>] [--image <file>]` — run one reply through the real MLX chat
 /// engine from an installed model, stream it, and report speed and memory, then eject and
 /// report what came back.
 enum ChatCommand {
@@ -11,6 +11,11 @@ enum ChatCommand {
         var followup: String?
         if let index = arguments.firstIndex(of: "--followup"), index + 1 < arguments.count {
             followup = arguments[index + 1]
+            arguments.removeSubrange(index ... index + 1)
+        }
+        var image: URL?
+        if let index = arguments.firstIndex(of: "--image"), index + 1 < arguments.count {
+            image = URL(fileURLWithPath: arguments[index + 1])
             arguments.removeSubrange(index ... index + 1)
         }
         let positional = arguments.filter { !$0.hasPrefix("--") }
@@ -31,7 +36,7 @@ enum ChatCommand {
         let engine = MLXChatEngine()
         let before = MemoryRelease.heldBytes
         let loadStart = Date()
-        try await engine.load(directory: store.directory(forRepo: repo))
+        try await engine.load(directory: store.directory(forRepo: repo), vision: image != nil)
         print(String(format: "Loaded in %.1f s, %@ held\n", Date().timeIntervalSince(loadStart),
                      gb(MemoryRelease.heldBytes - before)))
 
@@ -39,7 +44,7 @@ enum ChatCommand {
         let think = arguments.contains("--think")
         let options = ChatOptions(maxTokens: think ? 4_096 : 512, thinking: think)
         var reply = ""
-        for try await event in engine.stream([ChatTurn(.user, prompt)], options: options) {
+        for try await event in engine.stream([ChatTurn(.user, prompt, images: image.map { [$0] } ?? [])], options: options) {
             switch event {
             case .text(let text):
                 reply += text
@@ -69,7 +74,7 @@ enum ChatCommand {
         }
         if let followup {
             // The same conversation, one message on: only the new message should be read.
-            let turns = [ChatTurn(.user, prompt), ChatTurn(.assistant, reply), ChatTurn(.user, followup)]
+            let turns = [ChatTurn(.user, prompt, images: image.map { [$0] } ?? []), ChatTurn(.assistant, reply), ChatTurn(.user, followup)]
             var second: ChatStats?
             print("— follow-up: \(followup)\n")
             for try await event in engine.stream(turns, options: options) {

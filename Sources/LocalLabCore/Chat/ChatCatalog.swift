@@ -35,6 +35,10 @@ public struct ChatModelSpec: Sendable, Equatable, Identifiable, Hashable {
     /// Its figures and quality score were reviewed (the curated list), rather than
     /// estimated from its repo.
     public var isCurated = true
+    /// It can be asked about images: it ships a vision half the runtime loads.
+    public var seesImages = false
+    /// It only loads through the vision runtime — no text-only load exists for it.
+    public var needsVisionLoad = false
 
     public var id: String { repo }
 
@@ -98,7 +102,9 @@ public enum ChatCatalog {
             headDim: 256,
             maxContext: 262_144,
             qualityScore: score,
-            thinks: true
+            thinks: true,
+            // Qwen3.5 is natively multimodal: every size carries its vision tower.
+            seesImages: true
         )
     }
 }
@@ -140,7 +146,9 @@ extension ChatModelSpec {
             maxContext: config?.maxContext ?? 32_768,
             qualityScore: score,
             thinks: config?.modelType?.hasPrefix("qwen3") ?? false,
-            isCurated: false
+            isCurated: false,
+            seesImages: config?.hasVision == true && config?.modelType.map(RunnerSupport.visionModelTypes.contains) == true,
+            needsVisionLoad: config?.modelType.map { !RunnerSupport.chatModelTypes.contains($0) } ?? false
         )
     }
 }
@@ -156,7 +164,8 @@ public enum InstalledChatModels {
             guard let data = try? Data(contentsOf: directory.appendingPathComponent("config.json")),
                   let config = ModelConfigSummary.parse(data),
                   let type = config.modelType,
-                  RunnerSupport.chatModelTypes.contains(type), RunnerSupport.chatExclusions[type] == nil else { continue }
+                  RunnerSupport.chatModelTypes.contains(type) || RunnerSupport.visionModelTypes.contains(type),
+                  RunnerSupport.chatExclusions[type] == nil else { continue }
             let weights = installed.files.filter { $0.path.hasSuffix(".safetensors") }.reduce(Int64(0)) { $0 + $1.size }
             specs.append(.estimated(repo: repo, weightBytes: weights, config: config, revision: installed.revision))
         }

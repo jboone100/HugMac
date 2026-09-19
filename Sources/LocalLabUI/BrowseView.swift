@@ -155,7 +155,9 @@ private struct BrowseRow: View {
     }
 
     private var subtitle: String {
-        var parts = [row.entry.publisher, row.verdict.runner.label == "Not yet" ? taskName : row.verdict.runner.label]
+        var runner = row.verdict.runner.label == "Not yet" ? taskName : row.verdict.runner.label
+        if row.verdict.runner.isRunnable, RunnerSupport.seesImages(row.entry) { runner += " · sees images" }
+        var parts = [row.entry.publisher, runner]
         if let bits = row.entry.bits { parts.append("\(bits)-bit") }
         return parts.joined(separator: " · ")
     }
@@ -288,7 +290,9 @@ private struct ModelDetail: View {
 
     private var facts: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-            fact("Runs in LocalLab", row.verdict.runner.isRunnable ? row.verdict.runner.label : "Not yet")
+            fact("Runs in LocalLab", row.verdict.runner.isRunnable
+                 ? row.verdict.runner.label + (RunnerSupport.seesImages(row.entry) ? " — text and images" : "")
+                 : "Not yet")
             fact("Task", row.entry.task ?? "—")
             fact("Architecture", row.entry.modelType ?? "—")
             fact("Quantization", row.entry.bits.map { "\($0)-bit" } ?? "—")

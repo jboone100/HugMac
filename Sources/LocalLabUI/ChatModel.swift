@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import LocalLabCore
 import Observation
 
@@ -142,7 +143,49 @@ public final class ChatModel {
 
     public var canSend: Bool {
         guard !isGenerating, current != nil, unavailableReason == nil else { return false }
-        return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
+    }
+
+    // MARK: - Images
+
+    /// Images attached to the message being written: names in the conversation store.
+    public private(set) var pendingAttachments: [String] = []
+    public private(set) var attachError: String?
+
+    /// This conversation needs a model that can see: it has images, or one is about to be sent.
+    public var needsVision: Bool {
+        !pendingAttachments.isEmpty || messages.contains { !($0.attachments ?? []).isEmpty }
+    }
+
+    /// Some installed model can see images — whether attaching is possible at all.
+    public var canAttachImages: Bool { installedSpecs.contains { $0.seesImages } }
+
+    public func attachmentURL(_ name: String) -> URL { conversationStore.attachmentURL(name) }
+
+    /// Add images to the message being written. Copied into the conversation store, so the
+    /// conversation keeps them. Anything that isn't a readable image is refused.
+    public func attach(_ urls: [URL]) {
+        attachError = nil
+        for url in urls {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            guard CGImageSourceCreateWithURL(url as CFURL, nil).flatMap({ CGImageSourceGetCount($0) > 0 ? $0 : nil }) != nil else {
+                attachError = "\(url.lastPathComponent) isn't an image LocalLab can read."
+                continue
+            }
+            do {
+                pendingAttachments.append(try conversationStore.importAttachment(url))
+            } catch {
+                attachError = "Couldn't attach \(url.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+        refresh()
+    }
+
+    public func removeAttachment(_ name: String) {
+        pendingAttachments.removeAll { $0 == name }
+        try? FileManager.default.removeItem(at: conversationStore.attachmentURL(name))
+        refresh()
     }
 
     public var loadedRepo: String? {
@@ -161,13 +204,16 @@ public final class ChatModel {
         unavailableReason = nil
         switch selection {
         case .smartFit:
-            current = picker.smartFit(candidates: installedSpecs).map { fit in
-                contextOverride.map { picker.fit(fit.spec, context: $0) } ?? fit
+            let vision = needsVision
+            current = picker.smartFit(candidates: installedSpecs, vision: vision).map { fit in
+                contextOverride.map { picker.fit(fit.spec, context: $0, vision: vision) } ?? fit
             }
             if current == nil {
                 unavailableReason = installed.isEmpty
                     ? "No chat model is installed yet."
-                    : "None of the installed chat models runs well on this Mac right now."
+                    : vision && !canAttachImages
+                        ? "None of the installed chat models can see images. Browse has ones that can."
+                        : "None of the installed chat models runs well on this Mac right now."
             }
         case .manual(let repo):
             guard let spec = installedSpecs.first(where: { $0.repo == repo }) else {
@@ -175,10 +221,12 @@ public final class ChatModel {
                 unavailableReason = "The chosen model isn't installed."
                 break
             }
-            let fit = picker.fit(spec, context: contextOverride)
+            let fit = picker.fit(spec, context: contextOverride, vision: needsVision)
             current = fit
             if case .red(let because) = fit.grade {
                 unavailableReason = "\(spec.displayName) won't run here: \(because)."
+            } else if needsVision && !spec.seesImages {
+                unavailableReason = "\(spec.displayName) can't see images. Choose Smart Fit, or a model that can."
             }
         }
         recommendations = installed.isEmpty ? picker.recommendations(limit: 2) : []
@@ -213,6 +261,7 @@ public final class ChatModel {
     public func open(_ id: UUID) {
         guard !isGenerating else { return }
         activeID = id
+        refresh()
     }
 
     public func delete(_ id: UUID) {
@@ -225,21 +274,29 @@ public final class ChatModel {
     // MARK: - Sending
 
     public func send() {
-        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend, let fit = current else { return }
+        let images = pendingAttachments
+        // An image on its own is a question too.
+        let prompt = typed.isEmpty ? "Describe this image." : typed
+        let vision = needsVision
         draft = ""
+        pendingAttachments = []
         errorMessage = nil
         if active == nil { newConversation() }
         guard let conversationID = activeID else { return }
 
         update(conversationID) { conversation in
             if conversation.messages.isEmpty { conversation.title = Conversation.title(forFirstPrompt: prompt) }
-            conversation.messages.append(ChatMessage(role: .user, text: prompt))
+            conversation.messages.append(ChatMessage(role: .user, text: prompt,
+                                                     attachments: images.isEmpty ? nil : images))
             conversation.messages.append(ChatMessage(role: .assistant, text: ""))
             conversation.modelRepo = fit.spec.repo
         }
+        let store = conversationStore
         let turns = (conversation(conversationID)?.messages.dropLast() ?? []).map {
-            ChatTurn($0.role == .user ? .user : .assistant, $0.text)
+            ChatTurn($0.role == .user ? .user : .assistant, $0.text,
+                     images: ($0.attachments ?? []).map(store.attachmentURL))
         }
         let thinks = thinking && fit.spec.thinks
         // Reasoning runs long — thousands of tokens before the answer — so a thinking reply
@@ -252,7 +309,7 @@ public final class ChatModel {
         generation = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.ensureLoaded(fit.spec)
+                try await self.ensureLoaded(fit.spec, vision: vision || fit.spec.needsVisionLoad)
                 for try await event in self.backend.stream(Array(turns), options: options) {
                     switch event {
                     case .text(let text):
@@ -262,7 +319,7 @@ public final class ChatModel {
                     case .finished(let stats):
                         self.updateLastMessage(conversationID) { $0.stats = stats }
                         self.residentBytes = await self.backend.residentBytes()
-                        self.record(stats, for: fit.spec)
+                        self.record(stats, for: fit.spec, vision: vision || fit.spec.needsVisionLoad)
                     }
                 }
                 // A stopped stream just ends — it doesn't throw — so check here.
@@ -316,6 +373,7 @@ public final class ChatModel {
         idleTimer?.cancel()
         await backend.eject()
         engineState = .unloaded
+        loadedWithVision = false
         residentBytes = 0
         refresh()
     }
@@ -326,11 +384,15 @@ public final class ChatModel {
         if loadedRepo != nil { await eject() }
     }
 
-    private func ensureLoaded(_ spec: ChatModelSpec) async throws {
-        if loadedRepo == spec.repo { return }
+    /// Whether the loaded model carries its vision half.
+    public private(set) var loadedWithVision = false
+
+    private func ensureLoaded(_ spec: ChatModelSpec, vision: Bool) async throws {
+        if loadedRepo == spec.repo, loadedWithVision == vision { return }
         engineState = .loading(repo: spec.repo)
         do {
-            try await backend.load(directory: store.directory(forRepo: spec.repo))
+            try await backend.load(directory: store.directory(forRepo: spec.repo), vision: vision)
+            loadedWithVision = vision
             engineState = .loaded(repo: spec.repo)
             residentBytes = await backend.residentBytes()
         } catch {
@@ -359,12 +421,12 @@ public final class ChatModel {
 
     /// A reply's generation speed, per byte of weights read, so it prices every model here.
     /// Short replies are skipped: their fixed costs would dominate.
-    private func record(_ stats: ChatStats, for spec: ChatModelSpec) {
+    private func record(_ stats: ChatStats, for spec: ChatModelSpec, vision: Bool) {
         guard stats.generatedTokens >= 32, stats.generateSeconds > 0 else { return }
         let machine = detectHardware().machineKey
         queue.recordMeasurements([CalibrationSample(
-            engineID: ChatModelPicker.engineID, phase: "decode",
-            workUnits: Double(stats.generatedTokens) * spec.activeWeightBytes / 1e9 / (spec.isMixtureOfExperts ? 0.55 : 1),
+            engineID: ChatModelPicker.engineID, phase: vision ? ChatModelPicker.visionPhase : "decode",
+            workUnits: Double(stats.generatedTokens) * ChatModelPicker.gbReadPerToken(spec),
             seconds: stats.generateSeconds, peakBytes: 0, machine: machine,
             note: "\(spec.displayName), \(stats.generatedTokens) tokens"
         )])

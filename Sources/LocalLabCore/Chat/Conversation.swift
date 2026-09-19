@@ -17,15 +17,19 @@ public struct ChatMessage: Sendable, Codable, Equatable, Identifiable {
     public var renderMode: RenderMode?
     /// The reply was stopped before it finished.
     public var stopped: Bool
+    /// Images attached to a user message: file names in the conversation store's
+    /// `attachments` folder. Nil in messages saved before images could be attached.
+    public var attachments: [String]?
 
     public init(id: UUID = UUID(), role: Role, text: String, stats: ChatStats? = nil,
-                renderMode: RenderMode? = nil, stopped: Bool = false) {
+                renderMode: RenderMode? = nil, stopped: Bool = false, attachments: [String]? = nil) {
         self.id = id
         self.role = role
         self.text = text
         self.stats = stats
         self.renderMode = renderMode
         self.stopped = stopped
+        self.attachments = attachments
     }
 }
 
@@ -113,7 +117,29 @@ public struct ConversationStore: Sendable {
     }
 
     public func delete(_ id: UUID) {
+        if let conversation = loadAll().first(where: { $0.id == id }) {
+            for name in conversation.messages.flatMap({ $0.attachments ?? [] }) {
+                try? FileManager.default.removeItem(at: attachmentURL(name))
+            }
+        }
         try? FileManager.default.removeItem(at: url(for: id))
+    }
+
+    public var attachmentsDirectory: URL {
+        directory.appendingPathComponent("attachments", isDirectory: true)
+    }
+
+    public func attachmentURL(_ name: String) -> URL {
+        attachmentsDirectory.appendingPathComponent(name)
+    }
+
+    /// Copy an image into the store, so the conversation keeps it even if the original moves.
+    public func importAttachment(_ source: URL) throws -> String {
+        try FileManager.default.createDirectory(at: attachmentsDirectory, withIntermediateDirectories: true)
+        let ext = source.pathExtension.isEmpty ? "png" : source.pathExtension.lowercased()
+        let name = "\(UUID().uuidString).\(ext)"
+        try FileManager.default.copyItem(at: source, to: attachmentURL(name))
+        return name
     }
 
     func url(for id: UUID) -> URL {
@@ -141,10 +167,13 @@ public struct ChatTurn: Sendable, Equatable {
     public enum Role: String, Sendable { case system, user, assistant }
     public let role: Role
     public let content: String
+    /// Images with a user message.
+    public let images: [URL]
 
-    public init(_ role: Role, _ content: String) {
+    public init(_ role: Role, _ content: String, images: [URL] = []) {
         self.role = role
         self.content = content
+        self.images = images
     }
 }
 
@@ -175,9 +204,10 @@ public enum ChatEvent: Sendable, Equatable {
 /// What the chat screen needs from an engine. The MLX implementation lives in LocalLabMLX;
 /// tests supply a fake.
 public protocol ChatBackend: Sendable {
-    /// Load a model from a directory the installer filled. Loading a different model
-    /// replaces the resident one.
-    func load(directory: URL) async throws
+    /// Load a model from a directory the installer filled — with its vision half when
+    /// `vision` is set. Loading a different model, or the same one the other way, replaces
+    /// the resident one.
+    func load(directory: URL, vision: Bool) async throws
     func stream(_ turns: [ChatTurn], options: ChatOptions) -> AsyncThrowingStream<ChatEvent, Error>
     /// Drop the model and give its memory back to the system.
     func eject() async
@@ -187,4 +217,5 @@ public protocol ChatBackend: Sendable {
 
 public extension ChatBackend {
     func residentBytes() async -> Int64 { 0 }
+    func load(directory: URL) async throws { try await load(directory: directory, vision: false) }
 }

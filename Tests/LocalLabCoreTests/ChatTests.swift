@@ -107,6 +107,27 @@ struct ChatPickerTests {
         #expect(abs(picker.speed(of: spec("4B")).tokensPerSecond - 50 * nine.activeWeightBytes / spec("4B").activeWeightBytes) < 0.01)
     }
 
+    @Test func visionIsGradedAtItsOwnSpeedAndOnlyModelsThatSeeQualify() {
+        let picker = ChatModelPicker(hardware: m2Max, calibration: CalibrationStore())
+        let nine = spec("9B")
+        let text = picker.speed(of: nine).tokensPerSecond
+        let vision = picker.speed(of: nine, vision: true).tokensPerSecond
+        #expect(abs(vision - text * ChatModelPicker.visionSpeedFactor) < 0.01)
+
+        var blind = nine
+        blind.seesImages = false
+        #expect(picker.smartFit(candidates: [blind], vision: true) == nil)
+        #expect(picker.smartFit(candidates: [blind, spec("4B")], vision: true)?.spec == spec("4B"))
+
+        // A measured vision reply prices vision replies, not text ones.
+        let sample = CalibrationSample(engineID: ChatModelPicker.engineID, phase: ChatModelPicker.visionPhase,
+                                       workUnits: 100 * ChatModelPicker.gbReadPerToken(nine), seconds: 6.25,
+                                       peakBytes: 0, machine: m2Max.machineKey)
+        let measured = ChatModelPicker(hardware: m2Max, calibration: CalibrationStore(samples: [sample]))
+        #expect(abs(measured.speed(of: nine, vision: true).tokensPerSecond - 16) < 0.01)
+        #expect(abs(measured.speed(of: nine).tokensPerSecond - text) < 0.01)
+    }
+
     @Test func probesBeatTheSpecSheet() {
         var probes = ProbeStore()
         probes.record(ProbeReport(
@@ -195,6 +216,26 @@ struct ConversationTests {
         let long = String(repeating: "word ", count: 20)
         #expect(Conversation.title(forFirstPrompt: long).count == 48)
         #expect(Conversation.title(forFirstPrompt: "   ") == Conversation.untitled)
+    }
+
+    @Test func attachmentsAreCopiedInAndGoWithTheConversation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("locallab-attach-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConversationStore(directory: directory)
+        let source = directory.appendingPathComponent("photo.JPG")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("jpeg".utf8).write(to: source)
+        let name = try store.importAttachment(source)
+        #expect(name.hasSuffix(".jpg"))
+        let conversation = Conversation(messages: [ChatMessage(role: .user, text: "what's this?", attachments: [name])])
+        try store.save(conversation)
+        #expect(FileManager.default.fileExists(atPath: store.attachmentURL(name).path))
+        store.delete(conversation.id)
+        #expect(!FileManager.default.fileExists(atPath: store.attachmentURL(name).path), "deleting the conversation deletes its images")
+
+        let old = #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","role":"user","text":"hi","stopped":false}"#
+        #expect(try JSONDecoder().decode(ChatMessage.self, from: Data(old.utf8)).attachments == nil)
     }
 
     @Test func repliesSavedBeforeTheCacheWasKeptStillLoad() throws {

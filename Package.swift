@@ -39,6 +39,8 @@ let mlxTargets: [Target] = skipMLX ? [] : [
             .product(name: "MLXFast", package: "mlx-swift"),
             .product(name: "MLXLLM", package: "mlx-swift-lm"),
             .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            // Image Q&A (plan §7.1 #1): the vision half of the same approved package.
+            .product(name: "MLXVLM", package: "mlx-swift-lm"),
             .product(name: "Tokenizers", package: "swift-transformers"),
         ]
     ),

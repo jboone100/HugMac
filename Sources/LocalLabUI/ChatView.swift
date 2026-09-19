@@ -1,6 +1,7 @@
 import AppKit
 import LocalLabCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Chat (plan §5.12): opens on the best model this Mac runs well, says why, and names a
 /// better one when there is one — without downloading it.
@@ -23,6 +24,12 @@ public struct ChatView: View {
                     Recommendations(model: model)
                 } else {
                     Transcript(model: model)
+                        // Drop images onto the conversation to ask about them.
+                        .dropDestination(for: URL.self) { urls, _ in
+                            guard model.canAttachImages, !model.isGenerating else { return false }
+                            model.attach(urls)
+                            return true
+                        }
                     Divider()
                     Composer(model: model)
                 }
@@ -97,7 +104,7 @@ private struct ModelBar: View {
                 }
             }
             if let fit = model.current {
-                Text(fit.arithmetic + " · " + speedSource(fit.speed))
+                Text(fit.arithmetic + " · " + speedSource(fit.speed) + (model.needsVision ? " · with images" : ""))
                     .font(.caption).foregroundStyle(.secondary)
                 if case .yellow(let because) = fit.grade {
                     Label(because.prefix(1).uppercased() + because.dropFirst(), systemImage: "exclamationmark.triangle")
@@ -181,7 +188,8 @@ private struct ModelBar: View {
         switch estimate {
         case .measured: "speed measured on this Mac"
         case .extrapolated(_, _, .probes): "speed estimated from this Mac's measured bandwidth"
-        case .extrapolated(_, _, .specs): "speed estimated from the spec sheet"
+        case .extrapolated(_, _, .specs):
+            model.needsVision ? "vision speed estimated at under half the text speed" : "speed estimated from the spec sheet"
         case .unknown: "speed unknown"
         }
     }
@@ -337,9 +345,18 @@ private struct MessageRow: View {
         if message.role == .user {
             HStack {
                 Spacer(minLength: 80)
-                Text(message.text).textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.15)))
+                VStack(alignment: .trailing, spacing: 6) {
+                    if let attachments = message.attachments, !attachments.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(attachments, id: \.self) { name in
+                                AttachmentThumbnail(url: model.attachmentURL(name), size: 140)
+                            }
+                        }
+                    }
+                    Text(message.text).textSelection(.enabled)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.15)))
+                }
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
@@ -385,25 +402,80 @@ private struct MessageRow: View {
 
 private struct Composer: View {
     @Bindable var model: ChatModel
+    @State private var choosing = false
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("Message", text: $model.draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1 ... 8)
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
-                .onSubmit { model.send() }
-                .disabled(model.current == nil || model.unavailableReason != nil)
-            if model.isGenerating {
-                Button("Stop") { model.stop() }
-                    .keyboardShortcut(".", modifiers: .command)
-            } else {
-                Button("Send") { model.send() }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!model.canSend)
+        VStack(alignment: .leading, spacing: 8) {
+            if !model.pendingAttachments.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(model.pendingAttachments, id: \.self) { name in
+                        ZStack(alignment: .topTrailing) {
+                            AttachmentThumbnail(url: model.attachmentURL(name), size: 64)
+                            Button {
+                                model.removeAttachment(name)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill").symbolRenderingMode(.hierarchical)
+                            }
+                            .buttonStyle(.borderless)
+                            .offset(x: 6, y: -6)
+                            .help("Remove")
+                        }
+                    }
+                }
+            }
+            if let error = model.attachError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+            }
+            HStack(alignment: .bottom, spacing: 10) {
+                Button {
+                    choosing = true
+                } label: {
+                    Image(systemName: "paperclip")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!model.canAttachImages || model.isGenerating)
+                .help(model.canAttachImages
+                      ? "Attach an image to ask about — or drop one onto the conversation."
+                      : "None of your installed chat models can see images. Browse has ones that can.")
+                TextField(model.pendingAttachments.isEmpty ? "Message" : "Ask about the image — or just send to have it described",
+                          text: $model.draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1 ... 8)
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                    .onSubmit { model.send() }
+                    .disabled(model.current == nil && model.pendingAttachments.isEmpty)
+                if model.isGenerating {
+                    Button("Stop") { model.stop() }
+                        .keyboardShortcut(".", modifiers: .command)
+                } else {
+                    Button("Send") { model.send() }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!model.canSend)
+                }
             }
         }
         .padding(12)
+        .fileImporter(isPresented: $choosing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { model.attach(urls) }
+        }
+    }
+}
+
+/// An attached image, scaled to fit a square.
+private struct AttachmentThumbnail: View {
+    let url: URL
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let image = NSImage(contentsOf: url) {
+                Image(nsImage: image).resizable().scaledToFit()
+            } else {
+                Image(systemName: "photo").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: size, maxHeight: size)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }

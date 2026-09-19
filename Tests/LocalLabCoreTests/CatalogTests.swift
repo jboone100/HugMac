@@ -214,6 +214,21 @@ struct RunnerSupportTests {
         #expect(whisper.contains("Speech to text"))
     }
 
+    @Test func visionModelsChatAndSayTheySeeImages() {
+        let qwenVL = CatalogEntry(repo: "x/Qwen2.5-VL-7B", task: "image-text-to-text", modelType: "qwen2_5_vl")
+        #expect(RunnerSupport.runner(for: qwenVL) == .chat, "vision-only architectures chat through the vision load")
+        #expect(RunnerSupport.seesImages(qwenVL))
+        let qwen35Text = CatalogEntry(repo: "x/Qwen3.5-9B-text", task: "text-generation", modelType: "qwen3_5")
+        #expect(!RunnerSupport.seesImages(qwen35Text), "its task says text only")
+        let config = #"{"model_type":"qwen2_5_vl","num_hidden_layers":28,"num_attention_heads":28,"num_key_value_heads":4,"hidden_size":3584,"vision_config":{"depth":32}}"#
+        let summary = ModelConfigSummary.parse(Data(config.utf8))
+        #expect(summary?.hasVision == true)
+        let spec = ChatModelSpec.estimated(repo: "x/Qwen2.5-VL-7B", weightBytes: 5_000_000_000, config: summary)
+        #expect(spec.seesImages)
+        #expect(spec.needsVisionLoad, "no text-only load exists for Qwen2.5-VL")
+        #expect(ChatCatalog.models.allSatisfy { $0.seesImages }, "Qwen3.5 is natively multimodal")
+    }
+
     @Test func licencesThatRestrictUseMustBeRead() {
         #expect(!LicenseInfo.needsAcknowledgement("apache-2.0"))
         #expect(!LicenseInfo.needsAcknowledgement("MIT"))

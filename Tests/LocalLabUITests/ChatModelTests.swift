@@ -32,8 +32,11 @@ final class FakeChatBackend: ChatBackend, @unchecked Sendable {
         self.resident = resident
     }
 
-    func load(directory: URL) async throws {
+    let visionLoads = Locked<[Bool]>([])
+
+    func load(directory: URL, vision: Bool) async throws {
         loads.withLock { $0.append(directory) }
+        visionLoads.withLock { $0.append(vision) }
         loaded.withLock { $0 = true }
     }
     func eject() async {
@@ -206,6 +209,74 @@ struct ChatModelTests {
         #expect(make().idleUnloadMinutes == 0, "Never, remembered")
         chat.idleUnloadMinutes = 30
         #expect(make().idleUnloadMinutes == 30)
+    }
+
+    func installUncurated(_ repo: String, config: String, in workspace: Workspace) throws {
+        let directory = workspace.store.directory(forRepo: repo)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(config.utf8).write(to: directory.appendingPathComponent("config.json"))
+        FileManager.default.createFile(atPath: workspace.store.installedMarker(forRepo: repo).path, contents: nil)
+        var registry = InstallRegistry.load(workspace.store)
+        registry.models[repo] = try JSONDecoder.iso.decode(InstalledModel.self, from: Data("""
+        {"repo":"\(repo)","revision":"r","installedAt":"2026-09-18T00:00:00Z","sizeBytes":4000000000,
+         "files":[{"path":"model.safetensors","size":4000000000,"checksum":null}]}
+        """.utf8))
+        try registry.save(workspace.store)
+    }
+
+    @Test("An attached image picks a model that can see, loads its vision half, and travels with the message")
+    func imageQuestion() async throws {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        install(small, in: workspace)   // Qwen3.5 0.8B: sees images
+        try installUncurated("someone/Llama-7B-4bit", config: #"{"model_type":"llama","num_hidden_layers":32,"num_attention_heads":32,"num_key_value_heads":8,"hidden_size":4096,"max_position_embeddings":8192}"#, in: workspace)
+        let backend = FakeChatBackend(reply: ["A ", "boy."])
+        let (chat, _) = make(workspace, backend: backend)
+        #expect(chat.current?.spec.repo == "someone/Llama-7B-4bit", "text-only: the larger model")
+        #expect(chat.canAttachImages)
+
+        chat.attach([try workspace.makeImage()])
+        #expect(chat.pendingAttachments.count == 1)
+        #expect(chat.current?.spec.repo == small, "with an image: the one that can see")
+
+        chat.send()
+        await waitUntilIdle(chat)
+        let sent = backend.lastTurns.withLock { $0 }
+        #expect(sent.last?.content == "Describe this image.", "an image on its own is a question too")
+        #expect(sent.last?.images.count == 1)
+        #expect(backend.visionLoads.withLock { $0 } == [true])
+        #expect(chat.messages.first?.attachments?.count == 1)
+        #expect(chat.pendingAttachments.isEmpty)
+        if let name = chat.messages.first?.attachments?.first {
+            #expect(FileManager.default.fileExists(atPath: chat.attachmentURL(name).path), "copied into the conversation")
+        }
+        #expect(chat.loadedWithVision)
+    }
+
+    @Test("A model that can't see images is refused for an image conversation, and says why")
+    func blindModel() throws {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        install(small, in: workspace)
+        try installUncurated("someone/Llama-7B-4bit", config: #"{"model_type":"llama","num_hidden_layers":32,"num_attention_heads":32,"num_key_value_heads":8,"hidden_size":4096,"max_position_embeddings":8192}"#, in: workspace)
+        let (chat, _) = make(workspace)
+        chat.select(.manual(repo: "someone/Llama-7B-4bit"))
+        chat.attach([try workspace.makeImage()])
+        #expect(chat.unavailableReason?.contains("can't see images") == true)
+        #expect(!chat.canSend)
+    }
+
+    @Test("Only images can be attached")
+    func notAnImage() throws {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        install(small, in: workspace)
+        let (chat, _) = make(workspace)
+        let text = workspace.root.appendingPathComponent("notes.txt")
+        try Data("hello".utf8).write(to: text)
+        chat.attach([text])
+        #expect(chat.pendingAttachments.isEmpty)
+        #expect(chat.attachError?.contains("isn't an image") == true)
     }
 
     @Test("Stop keeps what arrived and marks the reply stopped")

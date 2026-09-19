@@ -3,6 +3,7 @@ import LocalLabCore
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import Tokenizers
 
 /// Runs chat models with `mlx-swift-lm`, loading only files the installer already put in
@@ -20,6 +21,8 @@ import Tokenizers
 public actor MLXChatEngine: ChatBackend {
     private var container: ModelContainer?
     private var loadedDirectory: URL?
+    /// Loaded with its vision half — what a conversation with images needs.
+    private var loadedVision = false
     /// The template opens `<think>` in the prompt (Qwen3.5), so a thinking reply starts
     /// mid-thought and the tag must be put back for the transcript to fold it.
     private var templateOpensThinking = false
@@ -43,11 +46,16 @@ public actor MLXChatEngine: ChatBackend {
         container == nil ? 0 : MemoryRelease.heldBytes
     }
 
-    public func load(directory: URL) async throws {
-        if loadedDirectory == directory, container != nil { return }
+    /// Loads the model text-only, or with its vision half when `vision` is set — the vision
+    /// load costs the tower's memory, so text-only conversations don't pay for it.
+    public func load(directory: URL, vision: Bool) async throws {
+        if loadedDirectory == directory, loadedVision == vision, container != nil { return }
         eject()
-        container = try await LLMModelFactory.shared.loadContainer(from: directory, using: HFTokenizerLoader())
+        container = vision
+            ? try await VLMModelFactory.shared.loadContainer(from: directory, using: HFTokenizerLoader())
+            : try await LLMModelFactory.shared.loadContainer(from: directory, using: HFTokenizerLoader())
         loadedDirectory = directory
+        loadedVision = vision
         templateOpensThinking = Self.templateOpensThinking(in: directory)
     }
 
@@ -55,6 +63,7 @@ public actor MLXChatEngine: ChatBackend {
         session = nil
         container = nil
         loadedDirectory = nil
+        loadedVision = false
         MemoryRelease.returnCachedBuffers()
     }
 
@@ -95,6 +104,7 @@ public actor MLXChatEngine: ChatBackend {
                 let history: [Chat.Message] = kept.dropLast().map(Self.message)
                 session = Session(
                     chat: ChatSession(container, history: history, generateParameters: parameters,
+                                      processing: Self.processing,
                                       additionalContext: ["enable_thinking": options.thinking]),
                     turns: prior, tokens: 0, thinking: options.thinking, context: options.contextTokens
                 )
@@ -104,7 +114,9 @@ public actor MLXChatEngine: ChatBackend {
             if options.thinking && templateOpensThinking { continuation.yield(.text("<think>\n")) }
             var reply = options.thinking && templateOpensThinking ? "<think>\n" : ""
             var stats: ChatStats?
-            for try await item in chat.streamDetails(to: message.content, images: [], videos: []) {
+            for try await item in chat.streamDetails(
+                to: message.content, images: message.images.map { .url($0) }, videos: []
+            ) {
                 if Task.isCancelled { break }
                 switch item {
                 case .chunk(let text):
@@ -159,14 +171,18 @@ public actor MLXChatEngine: ChatBackend {
     static func message(_ turn: ChatTurn) -> Chat.Message {
         switch turn.role {
         case .system: .system(turn.content)
-        case .user: .user(turn.content)
+        case .user: .user(turn.content, images: turn.images.map { .url($0) })
         case .assistant: .assistant(turn.content)
         }
     }
 
+    /// Images are scaled to fit 768 px before the vision tower sees them: enough to read a
+    /// document or a street sign, at a few hundred tokens an image rather than thousands.
+    static let processing = UserInput.Processing(resize: CGSize(width: 768, height: 768))
+
     static func userInput(_ turns: [ChatTurn], thinking: Bool) -> UserInput {
         // Qwen3.5's template reads `enable_thinking`; templates that don't use it ignore it.
-        UserInput(chat: turns.map(message), additionalContext: ["enable_thinking": thinking])
+        UserInput(chat: turns.map(message), processing: processing, additionalContext: ["enable_thinking": thinking])
     }
 
     /// Whether the chat template itself opens a `<think>` block when thinking is on.

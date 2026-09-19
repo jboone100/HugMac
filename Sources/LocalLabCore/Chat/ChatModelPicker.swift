@@ -53,11 +53,13 @@ public struct ChatModelPicker: Sendable {
     // MARK: - One model
 
     /// Grade a model at a context length, or at the longest one that keeps it green.
-    public func fit(_ spec: ChatModelSpec, context requested: Int? = nil) -> ChatFit {
+    /// `vision`: graded for a conversation with images — the model loaded with its vision
+    /// half, which generates more slowly.
+    public func fit(_ spec: ChatModelSpec, context requested: Int? = nil, vision: Bool = false) -> ChatFit {
         let context = requested ?? defaultContext(for: spec)
         let kv = spec.kvCacheBytes(context: context)
         let peak = spec.weightBytes + kv + Self.runtimeBytes
-        let (tokensPerSecond, speed) = self.speed(of: spec)
+        let (tokensPerSecond, speed) = self.speed(of: spec, vision: vision)
 
         let usable = hardware.usableMemoryBytes
         let plannable = hardware.plannableMemoryBytes()
@@ -104,11 +106,25 @@ public struct ChatModelPicker: Sendable {
     /// rates are kept per byte read, so one model's measurement prices another — otherwise
     /// estimated from memory bandwidth: the probe's measured figure when there is one, the
     /// spec sheet's otherwise.
-    public func speed(of spec: ChatModelSpec) -> (tokensPerSecond: Double, source: TimeEstimate) {
-        // Expert weights are gathered, not streamed: a mixture of experts reaches roughly
-        // half the bandwidth a dense model does. Priced as extra bytes, so a dense model's
-        // measured rate still applies.
-        let gbPerToken = spec.activeWeightBytes / 1e9 / (spec.isMixtureOfExperts ? 0.55 : 1)
+    /// Vision is kept apart: the runtime's vision load of Qwen3.5 9B generated at ~16 tok/s
+    /// where its text load did ~38 (M2 Max, 2026-09-18), so a vision reply measured here
+    /// prices vision replies only, and an unmeasured one is taken as 45% of the text speed.
+    public static let visionSpeedFactor = 0.45
+
+    public func speed(of spec: ChatModelSpec, vision: Bool = false) -> (tokensPerSecond: Double, source: TimeEstimate) {
+        if vision {
+            let gbPerToken = Self.gbReadPerToken(spec)
+            let measured = calibration.estimate(
+                engineID: Self.engineID, phase: Self.visionPhase, machine: hardware.machineKey, workUnits: gbPerToken
+            )
+            if let seconds = measured.seconds, seconds > 0, case .measured = measured {
+                return (1 / seconds, measured)
+            }
+            let text = speed(of: spec)
+            let seconds = 1 / (text.tokensPerSecond * Self.visionSpeedFactor)
+            return (1 / seconds, .extrapolated(seconds: seconds, fromChip: hardware.chipName, basis: .specs))
+        }
+        let gbPerToken = Self.gbReadPerToken(spec)
         let estimate = calibration.estimate(
             engineID: Self.engineID, phase: "decode", machine: hardware.machineKey, workUnits: gbPerToken
         )
@@ -134,6 +150,15 @@ public struct ChatModelPicker: Sendable {
         return (1 / seconds, .extrapolated(seconds: seconds, fromChip: hardware.chipName, basis: basis))
     }
 
+    public static let visionPhase = "decode-vision"
+
+    /// Gigabytes read per generated token. Expert weights are gathered, not streamed: a
+    /// mixture of experts reaches roughly half a dense model's bandwidth, priced as extra
+    /// bytes so a dense model's measured rate still applies.
+    public static func gbReadPerToken(_ spec: ChatModelSpec) -> Double {
+        spec.activeWeightBytes / 1e9 / (spec.isMixtureOfExperts ? 0.55 : 1)
+    }
+
     // MARK: - Choosing
 
     /// What **Smart Fit** loads — LocalLab's name for choosing from the hardware profile: among installed models that aren't red and aren't painfully
@@ -147,9 +172,12 @@ public struct ChatModelPicker: Sendable {
     }
 
     /// Smart Fit over any installed models — curated or estimated from their repos.
-    public func smartFit(candidates specs: [ChatModelSpec]) -> ChatFit? {
+    ///
+    /// `vision`: the conversation has images, so only models that can see them qualify.
+    public func smartFit(candidates specs: [ChatModelSpec], vision: Bool = false) -> ChatFit? {
         let candidates = specs
-            .map { fit($0) }
+            .filter { !vision || $0.seesImages }
+            .map { fit($0, vision: vision) }
             .filter { !$0.grade.isRed && $0.tokensPerSecond >= Self.usableTokensPerSecond }
         return candidates.max { a, b in
             let aGreen = a.grade == .green, bGreen = b.grade == .green

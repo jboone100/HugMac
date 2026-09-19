@@ -139,9 +139,11 @@ public struct ModelConfigSummary: Sendable, Equatable, Codable {
     public let expertsPerToken: Int?
     public let bits: Int?
     public let groupSize: Int?
+    /// The checkpoint carries a vision tower (`vision_config`).
+    public var hasVision = false
 
     public init(modelType: String?, layers: Int, cacheLayers: Int, kvHeads: Int, headDim: Int, maxContext: Int,
-                experts: Int?, expertsPerToken: Int?, bits: Int?, groupSize: Int?) {
+                experts: Int?, expertsPerToken: Int?, bits: Int?, groupSize: Int?, hasVision: Bool = false) {
         self.modelType = modelType
         self.layers = layers
         self.cacheLayers = cacheLayers
@@ -152,6 +154,7 @@ public struct ModelConfigSummary: Sendable, Equatable, Codable {
         self.expertsPerToken = expertsPerToken
         self.bits = bits
         self.groupSize = groupSize
+        self.hasVision = hasVision
     }
 
     public static func parse(_ data: Data) -> ModelConfigSummary? {
@@ -175,7 +178,8 @@ public struct ModelConfigSummary: Sendable, Equatable, Codable {
             experts: int("num_experts") ?? int("num_local_experts") ?? int("n_routed_experts"),
             expertsPerToken: int("num_experts_per_tok") ?? int("num_experts_per_token"),
             bits: (quantization?["bits"] as? NSNumber)?.intValue,
-            groupSize: (quantization?["group_size"] as? NSNumber)?.intValue
+            groupSize: (quantization?["group_size"] as? NSNumber)?.intValue,
+            hasVision: top["vision_config"] != nil || top["vision_tower"] != nil
         )
     }
 }
