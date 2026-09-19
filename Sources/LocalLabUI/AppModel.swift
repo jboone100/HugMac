@@ -38,6 +38,7 @@ public final class AppModel {
     public static func live() -> AppModel {
         // Before anything resolves a path: the library may still be under the old name.
         LegacyMigration.moveApplicationSupportIfNeeded()
+        LegacyMigration.copySettingsIfNeeded()
         // The library the user chose — or, if its drive isn't connected, the default one,
         // with the missing one named rather than shown as empty.
         let library = LibraryLocation.resolve()

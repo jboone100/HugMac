@@ -472,3 +472,27 @@ struct LegacyMigrationTests {
         #expect(!LegacyMigration.moveApplicationSupportIfNeeded(appSupport: base))
     }
 }
+
+@Suite("Settings from the placeholder bundle ID")
+struct SettingsMigrationTests {
+    @Test func copiesLocalLabKeysOnceNeverOverwriting() {
+        func domain() -> UserDefaults {
+            let name = "locallab-migrate-\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: name) ?? .standard
+            defaults.removePersistentDomain(forName: name)
+            return defaults
+        }
+        let old = domain(), current = domain()
+        old.set(15, forKey: "LocalLab.chatIdleUnloadMinutes")
+        old.set("/Volumes/Models/LocalLab", forKey: "LocalLab.libraryPath")
+        old.set("x", forKey: "SomethingElse")
+        current.set("/newer", forKey: "LocalLab.libraryPath")
+
+        #expect(LegacyMigration.copySettingsIfNeeded(from: old, to: current) == 1)
+        #expect(current.integer(forKey: "LocalLab.chatIdleUnloadMinutes") == 15)
+        #expect(current.string(forKey: "LocalLab.libraryPath") == "/newer", "never over a newer value")
+        #expect(current.object(forKey: "SomethingElse") == nil, "only LocalLab's own keys")
+        old.set(60, forKey: "LocalLab.chatIdleUnloadMinutes")
+        #expect(LegacyMigration.copySettingsIfNeeded(from: old, to: current) == 0, "once")
+    }
+}

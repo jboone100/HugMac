@@ -8,7 +8,7 @@
 # already supports.
 name: LocalLab
 options:
-  bundleIdPrefix: com.locallab
+  bundleIdPrefix: io.github.jboone100
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -26,7 +26,10 @@ targets:
         product: LocalLabUI
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.locallab.app
+        # Registered 2026-09-18 under the owner's individual account; the App Store record is
+        # "LocalLab AI" (plain "LocalLab" was taken). The app itself is still called LocalLab.
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.jboone100.locallab
+        DEVELOPMENT_TEAM: K8CKJEN3KC
         PRODUCT_NAME: LocalLab
         MARKETING_VERSION: "0.1"
         CURRENT_PROJECT_VERSION: "1"
@@ -36,7 +39,6 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         SWIFT_VERSION: "6.0"
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: NO
         ENABLE_APP_SANDBOX: NO
