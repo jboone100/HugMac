@@ -242,8 +242,10 @@ private struct ModelDetail: View {
                     HStack {
                         Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                         Spacer()
-                        if case .chat = row.verdict.runner {
-                            Button("Open in Chat") { model.chat(with: repo) }
+                        switch row.verdict.runner {
+                        case .chat: Button("Open in Chat") { model.chat(with: repo) }
+                        case .createImage: Button("Open in Create Image") { model.createImage() }
+                        default: EmptyView()
                         }
                         Button("Delete", role: .destructive) { Task { await model.uninstall(repo) } }
                     }

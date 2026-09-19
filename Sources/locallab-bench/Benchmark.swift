@@ -96,6 +96,10 @@ struct Benchmark {
             try await ImageBench.run(arguments: Array(raw.dropFirst()))
             return
         }
+        if raw.first == "--generate" {
+            try await GenerateCommand.run(arguments: Array(raw.dropFirst()))
+            return
+        }
         if raw.first == "--browse" {
             try await BrowseCommand.run(arguments: Array(raw.dropFirst()))
             return

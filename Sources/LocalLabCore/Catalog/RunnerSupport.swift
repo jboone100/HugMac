@@ -5,6 +5,7 @@ import Foundation
 public enum Runner: Sendable, Equatable {
     case chat
     case upscale(SeedVR2Variant)
+    case createImage(ImageModelSpec)
     /// LocalLab can't run it yet; the reason says what's missing.
     case notYet(String)
 
@@ -17,6 +18,7 @@ public enum Runner: Sendable, Equatable {
         switch self {
         case .chat: "Chat"
         case .upscale: "Upscale"
+        case .createImage: "Create image"
         case .notYet: "Not yet"
         }
     }
@@ -58,6 +60,9 @@ public enum RunnerSupport {
         if let variant = SeedVR2Variant.allCases.first(where: { $0.hfRepo == entry.repo }) {
             return .upscale(variant)
         }
+        if let image = ImageModelCatalog.spec(forRepo: entry.repo) {
+            return .createImage(image)
+        }
         if let type = entry.modelType {
             if let reason = chatExclusions[type] { return .notYet(reason) }
             let textTasks: Set<String?> = ["text-generation", "image-text-to-text", "conversational", nil]
@@ -73,7 +78,7 @@ public enum RunnerSupport {
         case "image-text-to-text": "LocalLab's vision engine doesn't support this architecture yet."
         case "automatic-speech-recognition": "Speech to text comes in a later phase."
         case "text-to-speech", "text-to-audio": "Speech and audio generation come in a later phase."
-        case "text-to-image": "Image generation comes in a later phase."
+        case "text-to-image": "LocalLab creates images with FLUX.1 schnell for now; other image models come later."
         case "text-to-video", "image-to-video", "image-text-to-video": "Video generation comes in a later phase."
         case "feature-extraction", "sentence-similarity": "Embeddings come in a later phase."
         case "text-generation": "This architecture isn't one LocalLab's chat engine can load."

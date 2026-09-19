@@ -2,15 +2,14 @@ import Foundation
 import LocalLabCore
 
 /// `locallab-bench --install <repo>` — install (or adopt, or resume) a model into the default
-/// library, printing progress. SeedVR2 repos use their component manifest; everything else
-/// uses the heuristics.
+/// library, printing progress. Repos an engine knows use its component manifest;
+/// everything else uses the heuristics.
 enum InstallCommand {
     static func run(arguments: [String]) async throws {
         guard let repo = arguments.first else {
             throw Failure("usage: locallab-bench --install <org/repo>")
         }
-        let manifest = SeedVR2Variant.allCases.contains { $0.hfRepo == repo }
-            ? SeedVR2Variant.manifest : nil
+        let manifest = ComponentManifest.known(for: repo)
         let installer = ModelInstaller()
         let staged = await installer.stagedBytes(repo)
         print("installing \(repo) into \(installer.store.baseDirectory.path)")

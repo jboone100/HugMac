@@ -82,6 +82,23 @@ public enum ModelGrader {
                                 arithmetic: capability.detail, caveat: grade == .yellow ? "Close other apps first." : nil,
                                 isEstimate: false, weightBytes: variant.downloadBytes)
 
+        case .createImage(let spec):
+            let fit = ImageModelFitter(hardware: hardware, calibration: calibration).fit(spec)
+            let time = fit.time.seconds.map { "about " + ImageModelFitter.duration($0) + " an image" }
+            let grade: ModelVerdict.Grade
+            let caveat: String?
+            let headline: String
+            switch fit.grade {
+            case .green:
+                (grade, caveat, headline) = (.green, nil, "Creates images here" + (time.map { " · " + $0 } ?? ""))
+            case .yellow(let because):
+                (grade, caveat, headline) = (.yellow, because, "Creates images, with a caveat" + (time.map { " · " + $0 } ?? ""))
+            case .red(let because):
+                (grade, caveat, headline) = (.red, because, "Too large for this Mac")
+            }
+            return ModelVerdict(runner: runner, grade: grade, headline: headline, arithmetic: fit.arithmetic,
+                                caveat: caveat, isEstimate: false, weightBytes: spec.downloadBytes)
+
         case .notYet(let reason):
             var fits: Bool?
             var arithmetic = ""

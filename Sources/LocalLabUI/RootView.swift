@@ -28,6 +28,8 @@ public struct RootView: View {
                 SwiftUI.Section("Tasks") {
                     Label("Chat", systemImage: "bubble.left.and.bubble.right")
                         .tag(Section.chat)
+                    Label("Create Image", systemImage: "wand.and.stars")
+                        .tag(Section.createImage)
                     Label("Upscale", systemImage: "arrow.up.left.and.arrow.down.right")
                         .tag(Section.upscale)
                 }
@@ -78,6 +80,7 @@ public struct RootView: View {
         case .machine: MachineView(model: app.machine)
         case .chat: ChatView(model: app.chat)
         case .browse: BrowseView(model: app.browse)
+        case .createImage: CreateImageView(model: app.createImage)
         default: UpscaleView(model: app.upscale)
         }
     }
@@ -86,14 +89,16 @@ public struct RootView: View {
 #if DEBUG
 /// `LOCALLAB_AUTOSTART=1 LOCALLAB_RESULT=out.txt` — start the loaded upscale as soon as it can,
 /// write a one-line result when its job ends, and quit. `LOCALLAB_RESUME_JOBS=1` resumes every
-/// interrupted or paused job instead. Exercises the real engine inside the app bundle.
+/// interrupted or paused job instead. `LOCALLAB_CREATE_PROMPT="…"` (with an optional
+/// `LOCALLAB_CREATE_SIZE=square512` etc.) makes one image on the Create Image screen. Each
+/// exercises the real engine inside the app bundle.
 @MainActor
 enum DebugAutoRun {
     /// Headless runs measure the engine, not the Mac — they skip the first-run probes.
     static var isRequested: Bool {
         let environment = ProcessInfo.processInfo.environment
         return environment["LOCALLAB_AUTOSTART"] == "1" || environment["LOCALLAB_RESUME_JOBS"] == "1"
-            || environment["LOCALLAB_SANDBOX_CHECK"] == "1"
+            || environment["LOCALLAB_SANDBOX_CHECK"] == "1" || environment["LOCALLAB_CREATE_PROMPT"] != nil
     }
 
     static func runIfRequested(_ app: AppModel) async {
@@ -111,6 +116,28 @@ enum DebugAutoRun {
             let lines = app.queue.jobs.map { "\($0.state.rawValue) attempts=\($0.attempts) \($0.outcome?.outputURL.path ?? $0.failure ?? "")" }
             write(lines.joined(separator: "\n"), to: resultURL)
             exit(0)
+        }
+
+        if let prompt = environment["LOCALLAB_CREATE_PROMPT"] {
+            let model = app.createImage
+            app.section = .createImage
+            await model.refreshModelState()
+            model.prompt = prompt
+            if let size = environment["LOCALLAB_CREATE_SIZE"].flatMap(ImageSize.init(rawValue:)) { model.size = size }
+            guard model.startBlocker == nil else {
+                write("not-started: \(model.startBlocker ?? "-")", to: resultURL)
+                exit(2)
+            }
+            model.start()
+            while let job = model.currentJob, !job.state.isFinished { try? await Task.sleep(for: .milliseconds(200)) }
+            let hold = Double(environment["LOCALLAB_HOLD_SECONDS"] ?? "") ?? 0
+            if hold > 0 { try? await Task.sleep(for: .seconds(hold)) }
+            if let job = model.currentJob, let outcome = job.outcome {
+                write(String(format: "ok %@ %.1fs peak=%lld", outcome.outputURL.path, outcome.seconds, outcome.peakBytes), to: resultURL)
+                exit(0)
+            }
+            write("failed: \(model.currentJob?.failure ?? "unknown")", to: resultURL)
+            exit(1)
         }
 
         guard environment["LOCALLAB_AUTOSTART"] == "1" else { return }

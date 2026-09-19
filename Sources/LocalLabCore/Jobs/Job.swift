@@ -79,6 +79,36 @@ public struct TextToVideoJobSpec: Codable, Sendable, Equatable {
     }
 }
 
+/// What a create-image job was asked to do. Fully decided when queued — unlike an upscale,
+/// nothing about it depends on memory at the time it runs.
+public struct ImageJobSpec: Codable, Sendable, Equatable {
+    /// The model's repo, as `ImageModelCatalog` names it.
+    public let model: String
+    public let prompt: String
+    public let width: Int
+    public let height: Int
+    public let steps: Int
+    public let seed: UInt64
+    public let outputURL: URL
+
+    public init(
+        model: String, prompt: String, width: Int, height: Int, steps: Int, seed: UInt64, outputURL: URL
+    ) {
+        self.model = model
+        self.prompt = prompt
+        self.width = width
+        self.height = height
+        self.steps = steps
+        self.seed = seed
+        self.outputURL = outputURL
+    }
+
+    public func with(outputURL: URL) -> ImageJobSpec {
+        ImageJobSpec(model: model, prompt: prompt, width: width, height: height, steps: steps,
+                     seed: seed, outputURL: outputURL)
+    }
+}
+
 /// What a finished job produced and measured.
 public struct JobOutcome: Codable, Sendable, Equatable {
     public let outputURL: URL
@@ -99,6 +129,7 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
     public enum Kind: Codable, Sendable, Equatable {
         case upscale(UpscaleJobSpec)
         case textToVideo(TextToVideoJobSpec)
+        case createImage(ImageJobSpec)
 
         /// Which engine runs it. Every kind shares one line: only one job of *any* kind runs
         /// at a time.
@@ -106,6 +137,7 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
             switch self {
             case .upscale: "upscale"
             case .textToVideo: "text-to-video"
+            case .createImage: "create-image"
             }
         }
 
@@ -116,6 +148,8 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
                 return "Video upscale"
             case .textToVideo(let spec):
                 return spec.startImage == nil ? "Text to video" : "Image to video"
+            case .createImage:
+                return "Create image"
             }
         }
 
@@ -123,6 +157,7 @@ public struct Job: Codable, Sendable, Equatable, Identifiable {
             switch self {
             case .upscale(let spec): spec.outputURL
             case .textToVideo(let spec): spec.outputURL
+            case .createImage(let spec): spec.outputURL
             }
         }
     }
@@ -196,6 +231,7 @@ extension Job {
         switch kind {
         case .upscale(let spec): spec.source.url.map { [$0] } ?? []
         case .textToVideo(let spec): spec.startImage.map { [$0] } ?? []
+        case .createImage: []
         }
     }
 
@@ -227,6 +263,8 @@ extension Job {
                 seconds: spec.seconds, shortSide: spec.shortSide, seed: spec.seed,
                 outputURL: map(spec.outputURL)
             ))
+        case .createImage(let spec):
+            job.kind = .createImage(spec.with(outputURL: map(spec.outputURL)))
         }
         if let outcome {
             job.outcome = JobOutcome(outputURL: map(outcome.outputURL), seconds: outcome.seconds,

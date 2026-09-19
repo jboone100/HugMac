@@ -58,6 +58,7 @@ public struct MachineProfile: Sendable {
                 upscaleImage(hardware: hardware, calibration: calibration, installed: installedUpscalers),
                 upscaleVideo(hardware: hardware, calibration: calibration, installed: installedUpscalers),
                 chat(hardware: hardware),
+                createImage(hardware: hardware, calibration: calibration),
                 videoGeneration(hardware: hardware),
             ]
         )
@@ -248,6 +249,25 @@ public struct MachineProfile: Sendable {
 
     /// Text-to-video isn't built yet. MiniMax-H3 at 384p peaked at about 15 GB in the plan's
     /// estimate (§6.2, §5.11).
+    /// FLUX.1 schnell at its largest square size — the size most people will want.
+    static func createImage(hardware: HardwareProfile, calibration: CalibrationStore) -> Capability {
+        let spec = ImageModelCatalog.fluxSchnell4bit
+        let fit = ImageModelFitter(hardware: hardware, calibration: calibration).fit(spec, size: .square1024)
+        let status: Capability.Status = switch fit.grade {
+        case .red: .tooLarge
+        case .green, .yellow: fit.fitsNow ? .ready : .closeApps
+        }
+        var headline = spec.displayName
+        if let seconds = fit.time.seconds { headline += " · about " + ImageModelFitter.duration(seconds) }
+        let detail = String(format: "Peak %.1f GB — the transformer, alone: the text encoders and VAE load only in their turn. ",
+                            Double(fit.peakBytes) / 1_073_741_824) + provenance(fit.time)
+        return Capability(
+            id: "create-image", title: "Create an image", example: "1024 × 1024 from a prompt",
+            status: status, headline: status == .tooLarge ? "Won't fit on this Mac" : headline,
+            detail: detail, time: fit.time
+        )
+    }
+
     static func videoGeneration(hardware: HardwareProfile) -> Capability {
         let needGB = 15.0
         let fits = hardware.usableMemoryGB >= needGB

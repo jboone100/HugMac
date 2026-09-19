@@ -39,6 +39,7 @@ public final class BrowseModel {
     private let detectHardware: @Sendable () -> HardwareProfile
     private let libraryChanged: @MainActor () async -> Void
     private let openInChat: @MainActor (String) -> Void
+    private let openCreateImage: @MainActor () -> Void
     private let debounce: Duration
     @ObservationIgnored private var entries: [CatalogEntry] = []
     @ObservationIgnored private var nextPage: URL?
@@ -58,7 +59,8 @@ public final class BrowseModel {
         debounce: Duration = .milliseconds(350),
         detectHardware: @Sendable @escaping () -> HardwareProfile = { HardwareProfile.detect() },
         libraryChanged: @escaping @MainActor () async -> Void = {},
-        openInChat: @escaping @MainActor (String) -> Void = { _ in }
+        openInChat: @escaping @MainActor (String) -> Void = { _ in },
+        openCreateImage: @escaping @MainActor () -> Void = {}
     ) {
         self.client = client
         self.cache = cache
@@ -70,6 +72,7 @@ public final class BrowseModel {
         self.detectHardware = detectHardware
         self.libraryChanged = libraryChanged
         self.openInChat = openInChat
+        self.openCreateImage = openCreateImage
         query = CatalogQuery()
         refreshInstalled()
     }
@@ -208,7 +211,7 @@ public final class BrowseModel {
         guard installBlocker(row) == nil else { return }
         installs[repo] = 0
         installErrors[repo] = nil
-        let manifest: ComponentManifest? = if case .upscale = row.verdict.runner { SeedVR2Variant.manifest } else { nil }
+        let manifest = ComponentManifest.known(for: repo)
         do {
             try await installer.install(repo, manifest: manifest) { progress in
                 Task { @MainActor [weak self] in
@@ -238,6 +241,10 @@ public final class BrowseModel {
 
     public func chat(with repo: String) {
         openInChat(repo)
+    }
+
+    public func createImage() {
+        openCreateImage()
     }
 
     public func refreshInstalled() {

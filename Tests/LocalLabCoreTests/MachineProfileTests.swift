@@ -141,9 +141,15 @@ struct ScalingTests {
         let bundled = ReferenceMachine.m2Max30Core32GB
         #expect(bundled.machine == m2Max)
         #expect(bundled.probes != nil)
+        let upscale = bundled.samples.filter { $0.engineID == SeedVR2Resolver.mlxEngineID }
+        #expect(!upscale.isEmpty)
         // A resumed run reported its skipped work as done: 0.1 s to encode 5 chunks.
-        #expect(bundled.samples.allSatisfy { $0.seconds > 1 })
-        #expect(bundled.samples.allSatisfy { SeedVR2Variant(sampleNote: $0.note) == .threeBInt8 })
+        #expect(upscale.allSatisfy { $0.seconds > 1 })
+        #expect(upscale.allSatisfy { SeedVR2Variant(sampleNote: $0.note) == .threeBInt8 })
+        // FLUX runs can't resume, so none is partial — but each size must have all three phases.
+        let flux = bundled.samples.filter { $0.engineID == ImageModelFitter.engineID }
+        #expect(Dictionary(grouping: flux, by: \.note).values.allSatisfy { $0.count == 3 })
+        #expect(bundled.samples.count == upscale.count + flux.count)
     }
 }
 

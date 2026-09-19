@@ -48,21 +48,24 @@ Store Connect is **Data Not Collected**.
 Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), **the model
 installer**, ported from MLXUI's `InstallManager`, the **job queue**, the **machine
 profile** with its first-run speed tests (plan §5.13–5.14), **Chat** (plan §5.12), and
-**Settings → Storage** (plan §5.4), and **Browse** (plan §5.2, §9.1).
+**Settings → Storage** (plan §5.4), **Browse** (plan §5.2, §9.1), and **Create Image** with
+FLUX.1 schnell (plan §7.1 #3).
 
 | Target | What's in it | Status |
 |---|---|---|
-| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 179 tests pass |
+| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 189 tests pass |
 | `LocalLabCore/Catalog` | Hugging Face search client and offline cache, which engine runs a model, licences, Smart Fit verdicts for any MLX model | 15 tests |
 | `LocalLabCore/Chat` | chat model catalog, `ChatModelPicker` (Smart Fit), conversations, the markdown block parser | 21 tests |
 | `LocalLabCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `LocalLabMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `LocalLabCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 46 tests |
+| `LocalLabCore/ImageGeneration` | the image model catalog and manifest, sizes, Smart Fit for image models | 9 tests |
+| `LocalLabUI` | the **Browse**, **Chat**, **Create Image**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 53 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `LocalLabMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
 | `LocalLabMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
-| `locallab-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile`, `--chat`, `--browse` | builds |
+| `LocalLabMLX/Flux` | FLUX.1 schnell: T5 + CLIP encoders, MMDiT transformer, VAE decoder, tokenizers (ported from MLXUI), loaded one phase at a time | 1024² in ~75 s on an M2 Max |
+| `locallab-bench` | the acceptance benchmark, `--install`, `--extract`, `--probe`, `--profile`, `--chat`, `--browse`, `--generate` | builds |
 
 ## Building
 
@@ -186,6 +189,28 @@ v1 covers the Qwen3.5 family (0.8B to 122B-A10B, Apache-2.0).
 
 ```bash
 swift run locallab-bench --chat mlx-community/Qwen3.5-9B-4bit "Explain unified memory in two sentences."
+```
+
+## Create Image
+
+**FLUX.1 schnell** (4-bit, Apache 2.0, `mzbac/flux1.schnell.4bit.mlx`, a 9.9 GB download):
+describe an image, choose a size (512², 768², 1024², 1344 × 768 or 768 × 1344 — about a
+megapixel at most, which is what FLUX was trained for), and optionally a seed. Smart Fit
+shows how long it will take on this Mac and what it needs before anything loads.
+
+- **One phase at a time.** The text encoders (3 GB) read the prompt and are released, the
+  transformer (6.7 GB) draws in 4 steps and is released, then the VAE decodes. Peak is
+  about 7.2 GB — not the model's full 10 GB — so a 16 GB Mac can run it.
+- **Measured on an M2 Max (30-core, 32 GB):** 512² in 21 s, 768² in 43 s, 1024² in 75 s.
+  Time is proportional to image tokens × steps (about 4.4 ms each); memory barely changes
+  with size. Other Macs' estimates are scaled from these until they've made an image
+  themselves.
+- **Each image is a job** on the same queue as upscales, so it keeps going when the window
+  closes. **Upscale…** sends a result straight to Upscale; **Use this prompt** puts the prompt
+  and seed back to vary it. The prompt is saved in the PNG's description.
+
+```bash
+swift run -c release locallab-bench --generate "a lighthouse on a cliff at dusk" --size 1024x1024 --seed 42
 ```
 
 ## Browse

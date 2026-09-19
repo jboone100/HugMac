@@ -532,8 +532,7 @@ public final class UpscaleModel {
             + "-\(plan.outputWidth)x\(plan.outputHeight)"
         let claimed = Set(queue.jobs.compactMap { job -> String? in
             // Unfinished jobs reserve their name; finished ones already exist on disk.
-            guard case .upscale(let spec) = job.kind, !job.state.isFinished else { return nil }
-            return spec.outputURL.path
+            job.state.isFinished ? nil : job.kind.outputURL.path
         })
         return ModelStore.uniqueOutputURL(
             in: store.outputsDirectory, stem: stem,

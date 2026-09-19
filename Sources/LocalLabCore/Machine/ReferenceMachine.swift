@@ -57,10 +57,37 @@ public struct ReferenceMachine: Sendable, Equatable {
                 sample("vae-encode", work: 1032192, peak: 1032192, seconds: 2.28, peakBytes: 5263855618, weights: 501000000, note: image),
                 sample("dit", work: 4032, peak: 4032, seconds: 4.69, peakBytes: 6271099590, weights: 4220000000, note: image),
                 sample("vae-decode", work: 1032192, peak: 1032192, seconds: 5.32, peakBytes: 9493275574, weights: 501000000, note: image),
-            ],
-            source: "LocalLab SeedVR2 engine runs on the owner's Mac, 2026-09-17"
+            ] + fluxSchnell(machine),
+            source: "LocalLab SeedVR2 engine runs on the owner's Mac, 2026-09-17; FLUX.1 schnell 4-bit, 2026-09-18"
         )
     }()
+
+    /// `locallab-bench --generate … --record` in a release build, one run at each size Create
+    /// Image offers (1344 × 768 stands for portrait too — same token count), 4 steps. Each
+    /// phase's time includes loading its weights.
+    static func fluxSchnell(_ machine: MachineKey) -> [CalibrationSample] {
+        let rows: [(phase: String, work: Double, peak: Double, seconds: Double, peakBytes: Int64, weights: Int64, note: String)] = [
+            ("text-encode", 1, 1, 1.24, 3273277106, 2992397467, "512×512, 4 steps"),
+            ("transformer", 4096, 1024, 19.22, 7808245802, 6693752375, "512×512, 4 steps"),
+            ("vae-decode", 262144, 262144, 0.30, 2792108288, 164654313, "512×512, 4 steps"),
+            ("text-encode", 1, 1, 1.22, 3273277106, 2992397467, "768×768, 4 steps"),
+            ("transformer", 9216, 2304, 39.89, 7754596402, 6693752375, "768×768, 4 steps"),
+            ("vae-decode", 589824, 589824, 0.60, 4108759266, 164654313, "768×768, 4 steps"),
+            ("text-encode", 1, 1, 1.22, 3273277106, 2992397467, "1024×1024, 4 steps"),
+            ("transformer", 16384, 4096, 72.31, 7692308524, 6693752375, "1024×1024, 4 steps"),
+            ("vae-decode", 1048576, 1048576, 1.09, 7232942306, 164654313, "1024×1024, 4 steps"),
+            ("text-encode", 1, 1, 1.23, 3273277106, 2992397467, "1344×768, 4 steps"),
+            ("transformer", 16128, 4032, 71.55, 7704023078, 6693752375, "1344×768, 4 steps"),
+            ("vae-decode", 1032192, 1032192, 1.09, 7104901346, 164654313, "1344×768, 4 steps"),
+        ]
+        return rows.map {
+            CalibrationSample(
+                engineID: ImageModelFitter.engineID, phase: $0.phase, workUnits: $0.work, peakUnits: $0.peak,
+                seconds: $0.seconds, peakBytes: $0.peakBytes, weightBytes: $0.weights, machine: machine,
+                chunkFrames: 1, note: $0.note
+            )
+        }
+    }
 
     /// `locallab-bench --probe` on the same Mac, 2026-09-18. GPU probes repeated within ~2%
     /// across three runs; disk and headroom vary with what else is running, and neither is

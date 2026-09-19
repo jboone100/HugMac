@@ -93,7 +93,7 @@ public final class JobQueue {
     ) {
         self.init(
             store: store,
-            executors: ["upscale": executor, "text-to-video": executor],
+            executors: ["upscale": executor, "text-to-video": executor, "create-image": executor],
             activity: activity, calibration: calibration, calibrationURL: calibrationURL,
             observeThermalState: observeThermalState, sampleAvailableMemory: sampleAvailableMemory
         )

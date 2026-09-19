@@ -287,8 +287,12 @@ public final class StorageModel {
         if chat?.loadedRepo == repo, chat?.isGenerating == true { return "Chat is using it right now." }
         if chat?.installs[repo] != nil { return "It's still downloading." }
         let waiting = queue.jobs.filter { job in
-            guard !job.state.isFinished, case .upscale(let spec) = job.kind else { return false }
-            return spec.variant.hfRepo == repo
+            guard !job.state.isFinished else { return false }
+            switch job.kind {
+            case .upscale(let spec): return spec.variant.hfRepo == repo
+            case .createImage(let spec): return spec.model == repo
+            case .textToVideo(let spec): return spec.model == repo
+            }
         }
         if !waiting.isEmpty {
             return "\(waiting.count) job\(waiting.count == 1 ? " needs" : "s need") it. Finish or remove \(waiting.count == 1 ? "it" : "them") first."
