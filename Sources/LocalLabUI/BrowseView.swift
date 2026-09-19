@@ -52,13 +52,20 @@ public struct BrowseView: View {
                 .labelsHidden()
                 .fixedSize()
                 Spacer()
-                Toggle("All publishers", isOn: Binding(
-                    get: { model.query.publisher == .everyone },
-                    set: { model.query.publisher = $0 ? .everyone : .mlxCommunity }
-                ))
-                .toggleStyle(.checkbox)
-                .help("Off: mlx-community, which does most MLX conversions. On: everyone publishing MLX weights, including republished and modified models.")
             }
+            HStack(spacing: 8) {
+                Text("From").foregroundStyle(.secondary)
+                Picker("From", selection: $model.query.publisher) {
+                    Text("mlx-community").tag(CatalogPublisher.mlxCommunity)
+                    Text("All publishers").tag(CatalogPublisher.everyone)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("mlx-community does most MLX conversions of well-known models. All publishers adds everyone else publishing MLX weights — other converters and individuals, including republished and modified versions.")
+                Spacer()
+            }
+            .font(.callout)
             if let since = model.offlineSince {
                 Label("Offline — showing results from \(since.formatted(date: .abbreviated, time: .shortened)).", systemImage: "wifi.slash")
                     .font(.caption).foregroundStyle(.orange)

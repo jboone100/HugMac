@@ -16,6 +16,8 @@ final class FakeCatalog: CatalogClient, @unchecked Sendable {
 
     func search(_ query: CatalogQuery, pageSize: Int) async throws -> CatalogPage {
         searches.withLock { $0 += 1 }
+        // Like URLSession: a request whose task is cancelled fails with URLError.cancelled.
+        do { try await Task.sleep(for: .milliseconds(5)) } catch { throw URLError(.cancelled) }
         if failing.withLock({ $0 }) { throw URLError(.notConnectedToInternet) }
         return CatalogPage(entries: pages.first ?? [], next: pages.count > 1 ? URL(string: "https://example.com/page/1") : nil)
     }
@@ -74,6 +76,37 @@ struct BrowseModelTests {
         await browse.search()
         #expect(browse.rows.map(\.entry.repo) == [llama.repo, chat.repo, speech.repo],
                 "by downloads within runnable — but runnable still first")
+    }
+
+    @Test("Changing a filter searches again and shows results, not a cancelled error")
+    func filterChange() async {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        let client = FakeCatalog(pages: [[speech, chat]])
+        let browse = make(workspace, client: client)
+        await browse.search()
+        browse.query.task = .textToSpeech
+        for _ in 0 ..< 200 where client.searches.withLock({ $0 }) < 2 || browse.isLoading {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(browse.errorMessage == nil)
+        #expect(browse.rows.count == 2)
+        #expect(browse.offlineSince == nil)
+    }
+
+    @Test("Typing quickly: only the last search counts, and none shows as an error")
+    func rapidTyping() async {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        let client = FakeCatalog(pages: [[chat]])
+        let browse = make(workspace, client: client)
+        for text in ["q", "qw", "qwe", "qwen"] {
+            browse.query.text = text
+            try? await Task.sleep(for: .milliseconds(3))
+        }
+        for _ in 0 ..< 200 where browse.rows.isEmpty || browse.isLoading { try? await Task.sleep(for: .milliseconds(5)) }
+        #expect(browse.errorMessage == nil)
+        #expect(browse.rows.map(\.entry.repo) == [chat.repo])
     }
 
     @Test("Offline, the last results are shown and labelled")

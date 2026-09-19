@@ -78,9 +78,17 @@ public final class BrowseModel {
 
     // MARK: - Searching
 
-    /// Search now — on appear, or when a search is retried.
+    /// Search now — on appear, or when a search is retried. Supersedes a search that was
+    /// waiting out the typing pause.
     public func search() async {
         searchTask?.cancel()
+        await performSearch()
+    }
+
+    /// The search itself. Never cancels anything: it runs *inside* the scheduled task, and
+    /// cancelling that task from here cancelled its own request — every filter change showed
+    /// "Couldn't reach Hugging Face: cancelled".
+    private func performSearch() async {
         generation += 1
         let mine = generation
         isLoading = true
@@ -94,7 +102,8 @@ public final class BrowseModel {
             offlineSince = nil
             cache.save(entries, for: query)
         } catch {
-            guard mine == generation, !(error is CancellationError) else { return }
+            // Superseded by a newer search: not a failure, and not worth a word.
+            guard mine == generation, !Self.isCancellation(error) else { return }
             if let cached = cache.load(query) {
                 entries = cached.entries
                 offlineSince = cached.fetched
@@ -125,8 +134,15 @@ public final class BrowseModel {
         searchTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            await self?.search()
+            await self?.performSearch()
         }
+    }
+
+    /// Cancellation arrives as Swift's `CancellationError` or, from `URLSession`, as
+    /// `URLError.cancelled`.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? URLError)?.code == .cancelled
     }
 
     /// Grade every loaded model for this Mac as it is now, and order them: runnable first
