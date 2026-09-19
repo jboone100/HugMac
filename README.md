@@ -25,6 +25,24 @@ reaches only its own container, plus files and folders you pick or drop:
 LOCALLAB_SANDBOX_CHECK=1 .build/xcode/Build/Products/Debug/LocalLab.app/Contents/MacOS/LocalLab
 ```
 
+## Releasing
+
+The App Store record is **LocalLab AI** (bundle ID `io.github.jboone100.locallab`); the app
+calls itself LocalLab. Version 1.0; the build number is the commit count, so each upload is
+higher than the last.
+
+```bash
+scripts/release.sh            # archive Release, check it, export a signed App Store package
+scripts/release.sh --upload   # …and upload it to App Store Connect
+```
+
+The script refuses a build that lacks an entitlement, carries the debug entitlement or debug
+hooks, is missing the privacy manifest, icon or MLX kernels, or isn't arm64-only. Uploading
+needs Xcode signed in to the developer account (Settings → Accounts) so it can use or create
+an Apple Distribution certificate. An uploaded build appears in App Store Connect and
+TestFlight; it goes to review only when submitted there. The privacy label to enter in App
+Store Connect is **Data Not Collected**.
+
 ## Current state
 
 Done so far: **the SeedVR2 upscaler**, image and video (plan §6.6 steps 1–3), **the model

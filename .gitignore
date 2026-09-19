@@ -9,3 +9,6 @@ LocalLab.xcodeproj/
 
 # === Planning docs: kept private, as in MLXUI (they record local runs and decisions) ===
 Design/
+
+# Release archives and exports (scripts/release.sh)
+build/

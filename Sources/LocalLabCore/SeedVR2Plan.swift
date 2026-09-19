@@ -582,7 +582,6 @@ public struct SeedVR2Resolver: Sendable {
         calibration: CalibrationStore, engineID: String, machine: MachineKey
     ) -> [PhaseEstimate] {
         let chunkLength = chunks.map(\.length).max() ?? 1
-        let chunkCount = chunks.count
         // ── Peak units ──────────────────────────────────────────────────────────────────
         func tileArea(_ tiling: VAETiling?) -> Double {
             if let tiling { return Double(tiling.tileSize * tiling.tileSize) }

@@ -29,13 +29,19 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.jboone100.locallab
         DEVELOPMENT_TEAM: K8CKJEN3KC
         PRODUCT_NAME: LocalLab
-        MARKETING_VERSION: "0.1"
+        # 1.0 is the version App Store Connect opened. The build number is overridden by
+        # scripts/release.sh with the commit count, so every upload is higher than the last.
+        MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: LocalLab
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
-        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Jeff Boone"
+        # Only the system's own HTTPS: exempt, so App Store Connect needn't ask each upload.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # MLX runs on Apple silicon only; an Intel slice would be dead weight.
+        ARCHS: arm64
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
         # Sandboxed and hardened in every configuration, so a debug run behaves like the one
