@@ -10,9 +10,30 @@ import Tokenizers
 ///
 /// Holds at most one model. `eject()` actually returns the memory, which MLXUI never did:
 /// dropping the container alone leaves MLX's buffer cache holding the weights.
+///
+/// **Keeps the conversation's key/value cache between turns.** A follow-up in the same
+/// conversation feeds the model only the new message, so a long conversation doesn't re-read
+/// itself before every reply. The cache is rebuilt — the conversation read once, oldest
+/// messages dropped if it no longer fits — when the conversation, *Think first* or the
+/// context length changes, or when it would overflow. It lives with the loaded model and goes
+/// when the model is ejected; the conversation itself is kept by the app regardless.
 public actor MLXChatEngine: ChatBackend {
     private var container: ModelContainer?
     private var loadedDirectory: URL?
+    /// The template opens `<think>` in the prompt (Qwen3.5), so a thinking reply starts
+    /// mid-thought and the tag must be put back for the transcript to fold it.
+    private var templateOpensThinking = false
+    private var session: Session?
+
+    /// A cached conversation: the turns it has seen, as the caller will send them back, and
+    /// how many tokens its cache holds.
+    struct Session {
+        let chat: ChatSession
+        var turns: [ChatTurn]
+        var tokens: Int
+        let thinking: Bool
+        let context: Int
+    }
 
     public init() {}
 
@@ -27,9 +48,11 @@ public actor MLXChatEngine: ChatBackend {
         eject()
         container = try await LLMModelFactory.shared.loadContainer(from: directory, using: HFTokenizerLoader())
         loadedDirectory = directory
+        templateOpensThinking = Self.templateOpensThinking(in: directory)
     }
 
     public func eject() {
+        session = nil
         container = nil
         loadedDirectory = nil
         MemoryRelease.returnCachedBuffers()
@@ -52,52 +75,54 @@ public actor MLXChatEngine: ChatBackend {
             continuation.finish(throwing: ChatEngineError.notLoaded)
             return
         }
+        guard let message = turns.last, message.role == .user else {
+            continuation.finish(throwing: ChatEngineError.noMessage)
+            return
+        }
+        let prior = Array(turns.dropLast())
+        let parameters = GenerateParameters(maxTokens: options.maxTokens, temperature: options.temperature)
         do {
-            // Fit the prompt and the reply into the context: drop the oldest exchange until it
-            // does, always keeping the system prompt and the newest message.
-            var kept = turns
-            var dropped = 0
-            var input: LMInput
-            while true {
-                input = try await container.prepare(input: Self.userInput(kept, thinking: options.thinking))
-                let promptTokens = input.text.tokens.size
-                guard promptTokens + options.maxTokens > options.contextTokens,
-                      let oldest = kept.firstIndex(where: { $0.role != .system }),
-                      oldest < kept.count - 1 else { break }
-                kept.remove(at: oldest)
-                dropped += 1
+            // Continue the cached conversation when this is its next message and it still
+            // fits; otherwise start one from the history.
+            var cachedTokens = 0
+            if let current = session, current.turns == prior, current.thinking == options.thinking,
+               current.context == options.contextTokens,
+               current.tokens + (await container.encode(message.content)).count + 32 + options.maxTokens
+                   <= options.contextTokens {
+                cachedTokens = current.tokens
+            } else {
+                let kept = try await fit(turns, options: options, container: container, continuation: continuation)
+                let history: [Chat.Message] = kept.dropLast().map(Self.message)
+                session = Session(
+                    chat: ChatSession(container, history: history, generateParameters: parameters,
+                                      additionalContext: ["enable_thinking": options.thinking]),
+                    turns: prior, tokens: 0, thinking: options.thinking, context: options.contextTokens
+                )
             }
-            if dropped > 0 { continuation.yield(.trimmed(droppedTurns: dropped)) }
+            guard let chat = session?.chat else { throw ChatEngineError.notLoaded }
 
-            // Qwen3.5's template opens the thinking block inside the prompt, so the reply
-            // starts mid-thought with no `<think>`. Put the tag back so the transcript can
-            // fold the thinking away.
-            if options.thinking {
-                let ids = input.text.tokens.asArray(Int.self).suffix(6)
-                let tail = await container.decode(tokenIds: Array(ids))
-                if let open = tail.range(of: "<think>", options: .backwards),
-                   !tail[open.upperBound...].contains("</think>") {
-                    continuation.yield(.text("<think>\n"))
-                }
-            }
-
-            let parameters = GenerateParameters(maxTokens: options.maxTokens, temperature: options.temperature)
-            let generation = try await container.generate(input: input, parameters: parameters)
+            if options.thinking && templateOpensThinking { continuation.yield(.text("<think>\n")) }
+            var reply = options.thinking && templateOpensThinking ? "<think>\n" : ""
             var stats: ChatStats?
-            for await item in generation {
+            for try await item in chat.streamDetails(to: message.content, images: [], videos: []) {
                 if Task.isCancelled { break }
                 switch item {
                 case .chunk(let text):
+                    reply += text
                     continuation.yield(.text(text))
                 case .info(let info):
                     stats = ChatStats(
                         promptTokens: info.promptTokenCount, generatedTokens: info.generationTokenCount,
-                        promptSeconds: info.promptTime, generateSeconds: info.generateTime
+                        promptSeconds: info.promptTime, generateSeconds: info.generateTime,
+                        cachedTokens: cachedTokens
                     )
                 case .toolCall:
                     break
                 }
             }
+            // The turns this cache now holds, exactly as the app will send them back next time.
+            session?.turns = turns + [ChatTurn(.assistant, reply)]
+            session?.tokens += (stats?.promptTokens ?? 0) + (stats?.generatedTokens ?? 0)
             if Task.isCancelled {
                 continuation.finish(throwing: CancellationError())
                 return
@@ -105,29 +130,63 @@ public actor MLXChatEngine: ChatBackend {
             if let stats { continuation.yield(.finished(stats)) }
             continuation.finish()
         } catch {
+            // A failed turn leaves the cache in an unknown state: start over next time.
+            session = nil
             continuation.finish(throwing: error)
         }
     }
 
-    static func userInput(_ turns: [ChatTurn], thinking: Bool) -> UserInput {
-        let messages: [Chat.Message] = turns.map { turn in
-            switch turn.role {
-            case .system: .system(turn.content)
-            case .user: .user(turn.content)
-            case .assistant: .assistant(turn.content)
-            }
+    /// The turns that fit the context with room for the reply: the oldest are dropped until
+    /// they do, always keeping the newest message.
+    private func fit(
+        _ turns: [ChatTurn], options: ChatOptions, container: ModelContainer,
+        continuation: AsyncThrowingStream<ChatEvent, Error>.Continuation
+    ) async throws -> [ChatTurn] {
+        var kept = turns
+        var dropped = 0
+        while true {
+            let input = try await container.prepare(input: Self.userInput(kept, thinking: options.thinking))
+            guard input.text.tokens.size + options.maxTokens > options.contextTokens,
+                  let oldest = kept.firstIndex(where: { $0.role != .system }),
+                  oldest < kept.count - 1 else { break }
+            kept.remove(at: oldest)
+            dropped += 1
         }
+        if dropped > 0 { continuation.yield(.trimmed(droppedTurns: dropped)) }
+        return kept
+    }
+
+    static func message(_ turn: ChatTurn) -> Chat.Message {
+        switch turn.role {
+        case .system: .system(turn.content)
+        case .user: .user(turn.content)
+        case .assistant: .assistant(turn.content)
+        }
+    }
+
+    static func userInput(_ turns: [ChatTurn], thinking: Bool) -> UserInput {
         // Qwen3.5's template reads `enable_thinking`; templates that don't use it ignore it.
-        return UserInput(chat: messages, additionalContext: ["enable_thinking": thinking])
+        UserInput(chat: turns.map(message), additionalContext: ["enable_thinking": thinking])
+    }
+
+    /// Whether the chat template itself opens a `<think>` block when thinking is on.
+    static func templateOpensThinking(in directory: URL) -> Bool {
+        let jinja = try? String(contentsOf: directory.appendingPathComponent("chat_template.jinja"), encoding: .utf8)
+        let config = (try? Data(contentsOf: directory.appendingPathComponent("tokenizer_config.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let template = jinja ?? (config?["chat_template"] as? String) ?? ""
+        return template.contains("enable_thinking") && template.contains("'<think>\\n'")
     }
 }
 
 public enum ChatEngineError: Error, LocalizedError {
     case notLoaded
+    case noMessage
 
     public var errorDescription: String? {
         switch self {
         case .notLoaded: "No chat model is loaded."
+        case .noMessage: "There's no new message to answer."
         }
     }
 }

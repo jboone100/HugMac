@@ -197,6 +197,13 @@ struct ConversationTests {
         #expect(Conversation.title(forFirstPrompt: "   ") == Conversation.untitled)
     }
 
+    @Test func repliesSavedBeforeTheCacheWasKeptStillLoad() throws {
+        let old = #"{"promptTokens":5,"generatedTokens":40,"promptSeconds":0.1,"generateSeconds":1}"#
+        let stats = try JSONDecoder().decode(ChatStats.self, from: Data(old.utf8))
+        #expect(stats.cachedTokens == nil)
+        #expect(stats.tokensPerSecond == 40)
+    }
+
     @Test func storeRoundTripsNewestFirst() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("locallab-conv-\(UUID().uuidString)", isDirectory: true)

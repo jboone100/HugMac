@@ -351,6 +351,10 @@ private struct MessageRow: View {
                 HStack(spacing: 10) {
                     if let stats = message.stats {
                         Text("\(stats.generatedTokens) tokens · \(String(format: "%.0f", stats.tokensPerSecond)) tok/s")
+                        if let cached = stats.cachedTokens, cached > 0 {
+                            Text("continued — \(cached.formatted()) tokens already read")
+                                .help("The model kept its reading of this conversation, so only the new message was read.")
+                        }
                     }
                     if message.stopped { Text("stopped") }
                     Spacer()

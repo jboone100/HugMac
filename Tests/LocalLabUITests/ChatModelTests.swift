@@ -182,6 +182,32 @@ struct ChatModelTests {
         #expect(chat.current?.context == 32_768)
     }
 
+    @Test("The idle-unload time is a setting that sticks; five minutes unless changed")
+    func idleSetting() {
+        let workspace = Workspace()
+        defer { workspace.cleanUp() }
+        let name = "locallab-idle-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name) ?? .standard
+        defaults.removePersistentDomain(forName: name)
+        func make() -> ChatModel {
+            ChatModel(
+                store: workspace.store,
+                installer: ModelInstaller(store: workspace.store, hub: FakeHubStub(), availableBytes: { 1 << 40 }),
+                queue: JobQueue(store: workspace.store, executor: FakeExecutor(), activity: NoActivity(),
+                                calibrationURL: workspace.calibrationURL),
+                backend: FakeChatBackend(),
+                conversationStore: ConversationStore(directory: workspace.root.appendingPathComponent("conversations")),
+                defaults: defaults, detectHardware: { m2Max(availableGB: 19) }
+            )
+        }
+        #expect(make().idleUnloadMinutes == 5)
+        let chat = make()
+        chat.idleUnloadMinutes = 0
+        #expect(make().idleUnloadMinutes == 0, "Never, remembered")
+        chat.idleUnloadMinutes = 30
+        #expect(make().idleUnloadMinutes == 30)
+    }
+
     @Test("Stop keeps what arrived and marks the reply stopped")
     func stop() async {
         let workspace = Workspace()

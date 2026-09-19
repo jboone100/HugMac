@@ -15,13 +15,13 @@ profile** with its first-run speed tests (plan §5.13–5.14), **Chat** (plan §
 
 | Target | What's in it | Status |
 |---|---|---|
-| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 167 tests pass |
+| `LocalLabCore` | `Media` (+video), named-slot `PipelineStage`, `HardwareProfile`, `SettingsResolver` for SeedVR2, `VideoIO`, `CalibrationStore`, the model installer | builds; 168 tests pass |
 | `LocalLabCore/Catalog` | Hugging Face search client and offline cache, which engine runs a model, licences, Smart Fit verdicts for any MLX model | 15 tests |
 | `LocalLabCore/Chat` | chat model catalog, `ChatModelPicker` (Smart Fit), conversations, the markdown block parser | 21 tests |
 | `LocalLabCore/Machine` | `MachineProfile`, `MachineKey`, probe results, bundled reference Macs, timing scaled between Macs | 22 tests |
 | `LocalLabMLX` | SeedVR2 VAE + transformer (ported from MLXUI), the temporal engine, residency manager, component verification, the stage | builds; benchmark passed |
 | `LocalLabCore/Jobs` | the **job queue**: many kinds, one line, chains, reordering, pause, resumable | 22 tests |
-| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 35 tests |
+| `LocalLabUI` | the **Browse**, **Chat**, **This Mac**, **Upscale** (single or batch), **Jobs** and **Settings → Storage** screens and their models | 37 tests |
 | `App/` + `project.yml` | the macOS app shell, generated with `xcodegen` | builds; runs a real upscale |
 | `LocalLabMLX/ProbeSuite` | the first-run speed tests: bandwidth, matmul, quantized matmul, attention, 3-D conv, memory headroom, disk | ~5 s on an M2 Max |
 | `LocalLabMLX/ChatEngine` | chat on `mlx-swift-lm`, tokenizers via `swift-transformers`, Eject that returns memory | |
@@ -126,8 +126,13 @@ graded with its arithmetic — weights + context cache + runtime, and tokens a s
 
 - **Never downloads behind your back.** A better model that would run here is named, with its
   size and an Install button. With nothing installed, the screen is the recommendation.
-- **Memory comes back.** Eject, 5 minutes idle, or a job starting (a streaming reply finishes
-  first) unloads the model and returns MLX's cached buffers to the system.
+- **Memory comes back.** Eject, an idle timeout (**Settings → Chat**: 1 minute to 1 hour, or
+  never; 5 minutes by default), or a job starting (a streaming reply finishes first) unloads
+  the model and returns MLX's cached buffers to the system. The conversation is kept.
+- **Follow-ups don't re-read the conversation.** The model's key/value cache is kept between
+  turns, so each reply reads only the new message (measured: 20 new tokens in 0.2 s with 482
+  already cached). It's rebuilt — the conversation read once — after an unload, a switch of
+  conversation, *Think first* or context, or when the context fills.
 - **Replies render** as markdown, code, tables or JSON, with a per-message *Show as* override
   remembered per model; a reasoning model's thinking is folded, and off unless *Think first*.
 - **Speed is measured** from each reply and feeds the next estimate. Conversations are saved in

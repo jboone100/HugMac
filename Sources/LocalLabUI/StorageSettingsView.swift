@@ -14,6 +14,8 @@ public struct SettingsView: View {
         TabView {
             StorageSettingsView(model: app.storage)
                 .tabItem { Label("Storage", systemImage: "externaldrive") }
+            ChatSettingsView(model: app.chat)
+                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
         }
         .frame(width: 680, height: 600)
     }

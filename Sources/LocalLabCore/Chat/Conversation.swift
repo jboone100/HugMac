@@ -34,12 +34,17 @@ public struct ChatStats: Sendable, Codable, Equatable {
     public let generatedTokens: Int
     public let promptSeconds: Double
     public let generateSeconds: Double
+    /// Tokens of the conversation already in the model's cache, so not read again for this
+    /// reply. Nil in replies saved before the cache was kept.
+    public let cachedTokens: Int?
 
-    public init(promptTokens: Int, generatedTokens: Int, promptSeconds: Double, generateSeconds: Double) {
+    public init(promptTokens: Int, generatedTokens: Int, promptSeconds: Double, generateSeconds: Double,
+                cachedTokens: Int? = nil) {
         self.promptTokens = promptTokens
         self.generatedTokens = generatedTokens
         self.promptSeconds = promptSeconds
         self.generateSeconds = generateSeconds
+        self.cachedTokens = cachedTokens
     }
 
     public var tokensPerSecond: Double {

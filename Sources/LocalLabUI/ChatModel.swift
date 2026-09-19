@@ -54,13 +54,28 @@ public final class ChatModel {
     private let conversationStore: ConversationStore
     private let defaults: UserDefaults
     private let detectHardware: @Sendable () -> HardwareProfile
-    private let idleEviction: Duration
+    /// Set only by tests; the app follows `idleUnloadMinutes`.
+    private let idleEvictionOverride: Duration?
     @ObservationIgnored private var generation: Task<Void, Never>?
     @ObservationIgnored private var idleTimer: Task<Void, Never>?
 
     static let selectionKey = "LocalLab.chatModel"
     static let thinkingKey = "LocalLab.chatThinking"
     static let renderModesKey = "LocalLab.chatRenderModes"
+    static let idleUnloadKey = "LocalLab.chatIdleUnloadMinutes"
+    public static let defaultIdleUnloadMinutes = 5
+    /// The choices Settings offers; 0 is "never".
+    public static let idleUnloadChoices = [1, 5, 15, 30, 60, 0]
+
+    /// Minutes an unused model stays loaded before its memory is given back; 0 keeps it
+    /// loaded until ejected or a job needs the machine. Unloading keeps the conversation —
+    /// only the model's cached reading of it goes, so the next reply re-reads it once.
+    public var idleUnloadMinutes: Int {
+        didSet {
+            defaults.set(idleUnloadMinutes, forKey: Self.idleUnloadKey)
+            if loadedRepo != nil, !isGenerating { scheduleIdleEviction() }
+        }
+    }
 
     public init(
         store: ModelStore,
@@ -69,7 +84,7 @@ public final class ChatModel {
         backend: ChatBackend,
         conversationStore: ConversationStore = ConversationStore(),
         defaults: UserDefaults = .standard,
-        idleEviction: Duration = .seconds(300),
+        idleEviction: Duration? = nil,
         detectHardware: @Sendable @escaping () -> HardwareProfile = { HardwareProfile.detect() }
     ) {
         self.store = store
@@ -78,7 +93,9 @@ public final class ChatModel {
         self.backend = backend
         self.conversationStore = conversationStore
         self.defaults = defaults
-        self.idleEviction = idleEviction
+        self.idleEvictionOverride = idleEviction
+        let savedMinutes = defaults.object(forKey: Self.idleUnloadKey) as? Int
+        idleUnloadMinutes = savedMinutes ?? Self.defaultIdleUnloadMinutes
         self.detectHardware = detectHardware
         let saved = defaults.string(forKey: Self.selectionKey)
         selection = saved.map { .manual(repo: $0) } ?? .smartFit
@@ -324,13 +341,21 @@ public final class ChatModel {
 
     private func scheduleIdleEviction() {
         idleTimer?.cancel()
-        let delay = idleEviction
+        let delay: Duration
+        if let override = idleEvictionOverride {
+            delay = override
+        } else if idleUnloadMinutes > 0 {
+            delay = .seconds(idleUnloadMinutes * 60)
+        } else {
+            return
+        }
         idleTimer = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, !self.isGenerating else { return }
             await self.eject()
         }
     }
+
 
     /// A reply's generation speed, per byte of weights read, so it prices every model here.
     /// Short replies are skipped: their fixed costs would dominate.
